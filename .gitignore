@@ -1,0 +1,12 @@
+# Compiled binaries
+/terraform-provider-jira-automation
+/import-gen
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfrc
+
+# Environment
+.env
