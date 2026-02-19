@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -74,14 +75,21 @@ func (r *ruleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"scope": schema.ListAttribute{
-				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
-				Description: "Rule scope ARIs (e.g. ari:cloud:jira:<cloudId>:project/<projectId>).",
+				Description: "Rule scope ARIs assigned by the API.",
+				PlanModifiers: []planmodifier.List{
+					listplanmodifier.UseStateForUnknown(),
+				},
 			},
 			"labels": schema.ListAttribute{
 				Optional:    true,
+				Computed:    true,
 				ElementType: types.StringType,
-				Description: "Rule labels.",
+				Description: "Rule labels. The provider auto-adds managed-by:terraform. Labels are add-only (never removed).",
+				PlanModifiers: []planmodifier.List{
+					labelsAddOnlyModifier{},
+				},
 			},
 			"trigger_json": schema.StringAttribute{
 				Required:    true,
@@ -125,11 +133,9 @@ func (r *ruleResource) Create(ctx context.Context, req resource.CreateRequest, r
 	}
 
 	createReq := client.CreateRuleRequest{
-		Name:          plan.Name.ValueString(),
-		Trigger:       trigger,
-		Components:    components,
-		RuleScopeARIs: toStringSlice(ctx, plan.Scope),
-		Labels:        toStringSlice(ctx, plan.Labels),
+		Name:       plan.Name.ValueString(),
+		Trigger:    trigger,
+		Components: components,
 	}
 
 	uuid, err := r.client.CreateRule(createReq)
@@ -147,6 +153,19 @@ func (r *ruleResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	// Read back the created rule to populate all computed fields.
 	diags := r.readIntoModel(ctx, uuid, &plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Sync labels via internal API.
+	r.syncLabels(ctx, uuid, plan, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Re-read after label sync to pick up the new labels.
+	diags = r.readIntoModel(ctx, uuid, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -194,11 +213,9 @@ func (r *ruleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	updateReq := client.UpdateRuleRequest{
-		Name:          plan.Name.ValueString(),
-		Trigger:       trigger,
-		Components:    components,
-		RuleScopeARIs: toStringSlice(ctx, plan.Scope),
-		Labels:        toStringSlice(ctx, plan.Labels),
+		Name:       plan.Name.ValueString(),
+		Trigger:    trigger,
+		Components: components,
 	}
 
 	if err := r.client.UpdateRule(uuid, updateReq); err != nil {
@@ -215,6 +232,19 @@ func (r *ruleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 	// Read back the updated rule.
 	diags := r.readIntoModel(ctx, uuid, &plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Sync labels via internal API.
+	r.syncLabels(ctx, uuid, plan, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	// Re-read after label sync to pick up the new labels.
+	diags = r.readIntoModel(ctx, uuid, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -381,4 +411,97 @@ func toStringSlice(ctx context.Context, list types.List) []string {
 	var strs []string
 	list.ElementsAs(ctx, &strs, false)
 	return strs
+}
+
+// syncLabels ensures all desired labels (config labels + managed-by:terraform) are present
+// on the rule via the internal API. Skips if the rule has no single-project scope.
+func (r *ruleResource) syncLabels(ctx context.Context, uuid string, model ruleResourceModel, diags *diag.Diagnostics) {
+	// Extract single project ID from scope.
+	scopes := toStringSlice(ctx, model.Scope)
+	if len(scopes) != 1 {
+		return // Global or multi-project rule — skip label management.
+	}
+
+	projectID := client.ExtractProjectID(scopes[0])
+	if projectID == "" {
+		return
+	}
+
+	// Build desired label set: config labels + managed-by:terraform.
+	desired := map[string]bool{"managed-by:terraform": true}
+	for _, l := range toStringSlice(ctx, model.Labels) {
+		desired[l] = true
+	}
+
+	// Check which labels already exist on the rule (from the read-back).
+	existing := map[string]bool{}
+	for _, l := range toStringSlice(ctx, model.Labels) {
+		existing[l] = true
+	}
+
+	for label := range desired {
+		if existing[label] {
+			continue
+		}
+		if err := r.client.EnsureLabel(projectID, uuid, label); err != nil {
+			diags.AddWarning("Error adding label",
+				fmt.Sprintf("Could not add label %q to rule %s: %s", label, uuid, err.Error()))
+		}
+	}
+}
+
+// --- Labels plan modifier (add-only semantics) ---
+
+type labelsAddOnlyModifier struct{}
+
+func (m labelsAddOnlyModifier) Description(_ context.Context) string {
+	return "Computes labels as the union of config, state, and managed-by:terraform (add-only)."
+}
+
+func (m labelsAddOnlyModifier) MarkdownDescription(ctx context.Context) string {
+	return m.Description(ctx)
+}
+
+func (m labelsAddOnlyModifier) PlanModifyList(ctx context.Context, req planmodifier.ListRequest, resp *planmodifier.ListResponse) {
+	// If config is null/unknown, preserve state (no diff).
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		if !req.StateValue.IsNull() {
+			resp.PlanValue = req.StateValue
+		}
+		return
+	}
+
+	// Build union of config labels + state labels + managed-by:terraform.
+	seen := map[string]bool{}
+	var union []string
+
+	addLabel := func(l string) {
+		if !seen[l] {
+			seen[l] = true
+			union = append(union, l)
+		}
+	}
+
+	// Config labels first (preserves user-specified order).
+	var configLabels []string
+	req.ConfigValue.ElementsAs(ctx, &configLabels, false)
+	for _, l := range configLabels {
+		addLabel(l)
+	}
+
+	// State labels (from previous apply or Jira UI additions).
+	if !req.StateValue.IsNull() && !req.StateValue.IsUnknown() {
+		var stateLabels []string
+		req.StateValue.ElementsAs(ctx, &stateLabels, false)
+		for _, l := range stateLabels {
+			addLabel(l)
+		}
+	}
+
+	// Always include managed-by:terraform.
+	addLabel("managed-by:terraform")
+
+	planned, diags := types.ListValueFrom(ctx, types.StringType, union)
+	resp.Diagnostics.Append(diags...)
+	resp.PlanValue = planned
 }

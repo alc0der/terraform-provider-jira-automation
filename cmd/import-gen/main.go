@@ -7,15 +7,61 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"terraform-provider-jira-automation/internal/client"
 )
 
+// extractUUIDFromURL extracts a rule UUID from a Jira Automation URL.
+// Expects a fragment like #/rule/<uuid> at the end.
+var ruleURLPattern = regexp.MustCompile(`#/rule/([0-9a-f-]+)`)
+
+func extractUUIDFromURL(url string) string {
+	m := ruleURLPattern.FindStringSubmatch(url)
+	if len(m) == 2 {
+		return m[1]
+	}
+	return ""
+}
+
 func main() {
 	outDir := "."
-	if len(os.Args) > 1 {
-		outDir = os.Args[1]
+	labelFilter := ""
+	ruleID := ""
+
+	// Parse flags.
+	args := os.Args[1:]
+	var positional []string
+	for i := 0; i < len(args); i++ {
+		switch {
+		case (args[i] == "--label") && i+1 < len(args):
+			labelFilter = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--label="):
+			labelFilter = strings.TrimPrefix(args[i], "--label=")
+		case (args[i] == "--id") && i+1 < len(args):
+			ruleID = args[i+1]
+			i++
+		case strings.HasPrefix(args[i], "--id="):
+			ruleID = strings.TrimPrefix(args[i], "--id=")
+		case (args[i] == "--url") && i+1 < len(args):
+			ruleID = extractUUIDFromURL(args[i+1])
+			if ruleID == "" {
+				log.Fatalf("Could not extract rule UUID from URL: %s", args[i+1])
+			}
+			i++
+		case strings.HasPrefix(args[i], "--url="):
+			ruleID = extractUUIDFromURL(strings.TrimPrefix(args[i], "--url="))
+			if ruleID == "" {
+				log.Fatalf("Could not extract rule UUID from URL: %s", args[i])
+			}
+		default:
+			positional = append(positional, args[i])
+		}
+	}
+	if len(positional) > 0 {
+		outDir = positional[0]
 	}
 
 	siteURL := envFirst("JIRA_SITE_URL", "ATLASSIAN_SITE_URL")
@@ -31,16 +77,54 @@ func main() {
 		log.Fatalf("creating client: %v", err)
 	}
 
+	// Single-rule mode: --id or --url.
+	if ruleID != "" {
+		importSingleRule(c, ruleID, outDir)
+		return
+	}
+
+	// Bulk mode: list all rules, optionally filter by --label.
+	importAllRules(c, labelFilter, outDir)
+}
+
+func importSingleRule(c *client.Client, uuid, outDir string) {
+	fmt.Printf("Fetching rule %s ...\n", uuid)
+
+	rule, err := c.GetRule(uuid)
+	if err != nil {
+		log.Fatalf("getting rule: %v", err)
+	}
+
+	resName := sanitize(rule.Name)
+	hcl := generateHCL(resName, rule)
+	filename := fmt.Sprintf("rule_%s.tf", resName)
+	path := filepath.Join(outDir, filename)
+
+	if err := os.WriteFile(path, []byte(hcl), 0644); err != nil {
+		log.Fatalf("writing %s: %v", filename, err)
+	}
+
+	fmt.Printf("Generated %s\n", path)
+	fmt.Printf("\nNext steps:\n")
+	fmt.Printf("  terraform plan   # review the import\n")
+	fmt.Printf("  terraform apply  # import into state\n")
+	fmt.Printf("  # Then remove the import block from %s\n", filename)
+}
+
+func importAllRules(c *client.Client, labelFilter, outDir string) {
 	summaries, err := c.ListRules()
 	if err != nil {
 		log.Fatalf("listing rules: %v", err)
 	}
 
 	fmt.Printf("Found %d rules. Fetching full details...\n", len(summaries))
+	if labelFilter != "" {
+		fmt.Printf("Filtering by label: %s\n", labelFilter)
+	}
 
 	// Track used resource names to handle duplicates.
 	usedNames := map[string]int{}
-	var importLines []string
+	generated := 0
 
 	for i, s := range summaries {
 		fmt.Printf("  [%d/%d] %s ... ", i+1, len(summaries), s.Name)
@@ -48,6 +132,12 @@ func main() {
 		rule, err := c.GetRule(s.UUID)
 		if err != nil {
 			fmt.Printf("SKIP (error: %v)\n", err)
+			continue
+		}
+
+		// Filter by label if --label flag is set.
+		if labelFilter != "" && !hasLabel(rule.Labels, labelFilter) {
+			fmt.Printf("SKIP (no label %q)\n", labelFilter)
 			continue
 		}
 
@@ -68,23 +158,29 @@ func main() {
 			continue
 		}
 
-		importLines = append(importLines, fmt.Sprintf(
-			"terraform import jira-automation_rule.%s %s", resName, rule.UUID))
-
+		generated++
 		fmt.Printf("-> %s\n", filename)
 	}
 
-	// Write imports script.
-	importsPath := filepath.Join(outDir, "imports.sh")
-	script := "#!/bin/bash\nset -e\n\n" + strings.Join(importLines, "\n") + "\n"
-	if err := os.WriteFile(importsPath, []byte(script), 0755); err != nil {
-		log.Fatalf("writing imports.sh: %v", err)
+	if generated == 0 {
+		fmt.Printf("\nNo rules matched.\n")
+		return
 	}
 
-	fmt.Printf("\nDone. Generated %d rule files in %s\n", len(importLines), outDir)
+	fmt.Printf("\nDone. Generated %d rule files in %s\n", generated, outDir)
 	fmt.Printf("Next steps:\n")
-	fmt.Printf("  cd %s\n", outDir)
-	fmt.Printf("  bash imports.sh\n")
+	fmt.Printf("  terraform plan   # review the imports\n")
+	fmt.Printf("  terraform apply  # import into state\n")
+	fmt.Printf("  # Then remove the import blocks from each rule_*.tf file\n")
+}
+
+func hasLabel(labels []string, target string) bool {
+	for _, l := range labels {
+		if l == target {
+			return true
+		}
+	}
+	return false
 }
 
 func envFirst(keys ...string) string {
@@ -112,79 +208,125 @@ func sanitize(name string) string {
 	return s
 }
 
+func generateImportBlock(resName, uuid string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "import {\n")
+	fmt.Fprintf(&b, "  to = jira-automation_rule.%s\n", resName)
+	fmt.Fprintf(&b, "  id = %q\n", uuid)
+	fmt.Fprintf(&b, "}\n")
+	return b.String()
+}
+
 func generateHCL(resName string, rule *client.Rule) string {
 	var b strings.Builder
 
 	enabled := rule.State == "ENABLED"
 
+	// Import block — remove after first terraform apply.
+	b.WriteString(generateImportBlock(resName, rule.UUID))
+	b.WriteString("\n")
+
 	fmt.Fprintf(&b, "resource \"jira-automation_rule\" %q {\n", resName)
 	fmt.Fprintf(&b, "  name    = %q\n", rule.Name)
 	fmt.Fprintf(&b, "  enabled = %v\n", enabled)
 
-	// Scope
-	if len(rule.RuleScopeARIs) > 0 {
-		fmt.Fprintf(&b, "\n  scope = [\n")
-		for _, s := range rule.RuleScopeARIs {
-			fmt.Fprintf(&b, "    %q,\n", s)
-		}
-		fmt.Fprintf(&b, "  ]\n")
-	}
+	// scope is computed-only (assigned by the API), not emitted.
+	// labels are managed via internal API, not emitted.
 
-	// Labels
-	if len(rule.Labels) > 0 {
-		fmt.Fprintf(&b, "\n  labels = [\n")
-		for _, l := range rule.Labels {
-			fmt.Fprintf(&b, "    %q,\n", l)
-		}
-		fmt.Fprintf(&b, "  ]\n")
-	}
+	// Trigger JSON
+	triggerVal := parseAndStrip(rule.Trigger)
+	fmt.Fprintf(&b, "\n  trigger_json = jsonencode(%s)\n", renderHCLExpr(triggerVal, 2))
 
-	// Trigger JSON — use normalized compact form to match what the provider stores in state.
-	triggerNorm := normalizeJSON(rule.Trigger)
-	fmt.Fprintf(&b, "\n  trigger_json = %q\n", triggerNorm)
-
-	// Components JSON — use normalized compact form.
-	componentsNorm := normalizeJSONArray(rule.Components)
-	fmt.Fprintf(&b, "\n  components_json = %q\n", componentsNorm)
+	// Components JSON
+	compsVal := parseAndStripArray(rule.Components)
+	fmt.Fprintf(&b, "\n  components_json = jsonencode(%s)\n", renderHCLExpr(compsVal, 2))
 
 	fmt.Fprintf(&b, "}\n")
 	return b.String()
 }
 
-// normalizeJSON round-trips JSON through interface{} to produce compact, key-sorted output,
-// stripping API-assigned fields (id, parentId, conditionParentId).
-func normalizeJSON(raw json.RawMessage) string {
+func parseAndStrip(raw json.RawMessage) interface{} {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.UseNumber()
 	var v interface{}
 	if err := dec.Decode(&v); err != nil {
-		return string(raw)
+		return nil
 	}
 	stripAPIFields(v)
-	out, err := json.Marshal(v)
-	if err != nil {
-		return string(raw)
-	}
-	return string(out)
+	return v
 }
 
-func normalizeJSONArray(raws []json.RawMessage) string {
-	var arr []interface{}
+func parseAndStripArray(raws []json.RawMessage) interface{} {
+	arr := make([]interface{}, 0, len(raws))
 	for _, raw := range raws {
 		dec := json.NewDecoder(strings.NewReader(string(raw)))
 		dec.UseNumber()
 		var v interface{}
 		if err := dec.Decode(&v); err != nil {
-			return "[]"
+			continue
 		}
 		stripAPIFields(v)
 		arr = append(arr, v)
 	}
-	out, err := json.Marshal(arr)
-	if err != nil {
-		return "[]"
+	return arr
+}
+
+// renderHCLExpr renders a parsed JSON value as an HCL expression for use inside jsonencode().
+// level is the indentation of the opening bracket; content is indented level+2.
+func renderHCLExpr(v interface{}, level int) string {
+	indent := strings.Repeat(" ", level+2)
+	closingIndent := strings.Repeat(" ", level)
+
+	switch val := v.(type) {
+	case nil:
+		return "null"
+	case bool:
+		if val {
+			return "true"
+		}
+		return "false"
+	case json.Number:
+		return val.String()
+	case string:
+		return fmt.Sprintf("%q", val)
+	case []interface{}:
+		if len(val) == 0 {
+			return "[]"
+		}
+		var b strings.Builder
+		b.WriteString("[\n")
+		for _, elem := range val {
+			b.WriteString(indent)
+			b.WriteString(renderHCLExpr(elem, level+2))
+			b.WriteString(",\n")
+		}
+		b.WriteString(closingIndent)
+		b.WriteString("]")
+		return b.String()
+	case map[string]interface{}:
+		if len(val) == 0 {
+			return "{}"
+		}
+		keys := make([]string, 0, len(val))
+		for k := range val {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		var b strings.Builder
+		b.WriteString("{\n")
+		for _, k := range keys {
+			b.WriteString(indent)
+			b.WriteString(k)
+			b.WriteString(" = ")
+			b.WriteString(renderHCLExpr(val[k], level+2))
+			b.WriteString("\n")
+		}
+		b.WriteString(closingIndent)
+		b.WriteString("}")
+		return b.String()
+	default:
+		return fmt.Sprintf("%v", v)
 	}
-	return string(out)
 }
 
 // stripAPIFields recursively removes API-assigned fields from component JSON.

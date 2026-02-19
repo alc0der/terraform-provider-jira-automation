@@ -82,9 +82,25 @@ For "field is not empty":
 
 An ELSE branch is another `CONDITION_BLOCK` sibling with `conditions: []`.
 
+## Rule State Endpoint
+
+`PUT /rule/{uuid}/state` uses a **different payload format** than other write endpoints:
+
+```json
+// WRONG — returns 400
+{"enabled": true}
+
+// CORRECT
+{"value": "ENABLED"}   // or "DISABLED"
+```
+
+No `{"rule": ...}` envelope needed. The schema is `RuleStateUpdateRequest` with a single required field `value` (enum: `"ENABLED"`, `"DISABLED"`).
+
+An expired token on this endpoint returns `400` (not `401`), same as the main rule endpoints.
+
 ## API Token Expiry
 
-The `ATLASSIAN_TOKEN` has a short lifetime. An expired token returns the **same** `400: "The request body could not be parsed"` error on writes (not 401). Always verify auth with a quick GET before debugging write failures.
+The `ATLASSIAN_TOKEN` has a short lifetime. An expired token returns `401: "Unauthorized"` on reads and `400: "The request body could not be parsed"` on writes. Always verify auth with a quick GET before debugging write failures.
 
 ## OpenAPI Spec Location
 

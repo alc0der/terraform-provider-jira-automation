@@ -72,12 +72,15 @@ The full list of supported env vars:
 
 ### 4. Write your Terraform config
 
-Create a `.tf` file. Two things are required:
+Create a directory for your project (e.g. `my-jira/`) and add a file called `main.tf`:
 
-1. A `required_providers` block — tells Terraform which provider to use.
-2. A `provider` block — **always required by Terraform**, even if empty.
+> **How Terraform reads files:** Terraform loads *all* `.tf` files in the current
+> directory and merges them together. File names don't matter — `main.tf`,
+> `rules.tf`, `foo.tf` are all treated the same. The convention is to put
+> provider config in `main.tf` and resources in other files, but it's just a
+> convention.
 
-Minimal example using only env vars for credentials:
+`main.tf`:
 
 ```hcl
 terraform {
@@ -91,12 +94,6 @@ terraform {
 # This block is always required. When all three values come from env vars,
 # it can be empty like this:
 provider "jira-automation" {}
-
-data "jira-automation_rules" "all" {}
-
-output "all_rules" {
-  value = data.jira-automation_rules.all.rules
-}
 ```
 
 You can also hardcode values directly in the provider block (useful if you
@@ -143,7 +140,6 @@ resource "jira-automation_rule" "example" {
   name    = "My Rule"
   enabled = true
 
-  scope  = ["ari:cloud:jira:<cloudId>:project/<projectId>"]
   labels = ["CI"]
 
   trigger_json = jsonencode({
@@ -175,19 +171,69 @@ resource "jira-automation_rule" "example" {
 | `name` | string | required | Rule name |
 | `enabled` | bool | optional | Enable/disable (default: `true`) |
 | `state` | string | computed | `ENABLED` or `DISABLED` |
-| `scope` | list(string) | optional | Scope ARIs |
-| `labels` | list(string) | optional | Labels |
+| `scope` | list(string) | computed | Scope ARIs assigned by the API |
+| `labels` | list(string) | optional | Labels (add-only — the provider auto-adds `managed-by:terraform`) |
 | `trigger_json` | string (JSON) | required | Trigger config — use `jsonencode()` |
 | `components_json` | string (JSON) | required | Actions/conditions array — use `jsonencode()` |
 
 `trigger_json` and `components_json` use semantic JSON comparison, so whitespace and key ordering differences won't show as drift.
 
-#### Import
+#### Importing an Existing Rule
 
-Import an existing rule by its UUID:
+> **Why not `terraform import`?** The CLI command `terraform import` requires
+> you to write the full `resource` block first — including `trigger_json` and
+> `components_json`. For automation rules with complex configs, that's
+> impractical. The `import` block approach below lets Terraform generate the
+> resource configuration from the live API automatically.
+
+To bring a pre-existing Jira Automation rule under Terraform management:
+
+**1. Find the rule UUID.** Open the rule in Jira — the URL contains the ID after `#/rule/`:
+
+```
+https://yoursite.atlassian.net/jira/settings/automate#/rule/<rule-uuid>
+```
+
+**2. Create `imports.tf`.** In your project directory (next to `main.tf`), create a file called `imports.tf`:
+
+```hcl
+import {
+  to = jira-automation_rule.my_rule
+  id = "01997721-1866-7233-9bb8-cec4a4614919"
+}
+```
+
+> `my_rule` is the Terraform resource name — you choose it. It's how you'll
+> refer to this rule in your `.tf` files. Use something descriptive like
+> `attach_test_report` or `notify_on_release`.
+
+**3. Generate the resource configuration.** Terraform can auto-generate the `resource` block from the API. Run this from your project directory:
 
 ```bash
-terraform import jira-automation_rule.example <rule-uuid>
+terraform plan -generate-config-out=generated.tf
+```
+
+This creates a file called `generated.tf` with the full resource block, including `trigger_json` and `components_json` populated from the live rule.
+
+**4. Review and apply.**
+
+```bash
+terraform plan    # preview the import
+terraform apply   # import into state
+```
+
+**5. Clean up.** After the import succeeds, delete `imports.tf` — it was only needed for the one-time import. Rename `generated.tf` to something descriptive (e.g. `rule_my_rule.tf`).
+
+```bash
+rm imports.tf
+mv generated.tf rule_my_rule.tf
+```
+
+**6. Verify.** A subsequent `terraform plan` should show no changes:
+
+```bash
+terraform plan
+# No changes. Your infrastructure matches the configuration.
 ```
 
 #### Destroy behavior
