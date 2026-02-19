@@ -37,7 +37,7 @@ type ListRulesResponse struct {
 
 // GetRuleResponse is the envelope for GET /rule/{uuid}.
 type GetRuleResponse struct {
-	Rule Rule `json:"rule"`
+	Rule json.RawMessage `json:"rule"`
 }
 
 // Rule is the full rule object from GET /rule/{uuid}.
@@ -49,6 +49,33 @@ type Rule struct {
 	Labels        []string          `json:"labels,omitempty"`
 	Trigger       json.RawMessage   `json:"trigger"`
 	Components    []json.RawMessage `json:"components"`
+}
+
+// getRuleRaw returns the raw JSON for a rule (without the envelope).
+func (c *Client) getRuleRaw(uuid string) (json.RawMessage, error) {
+	url := c.BaseURL + "/rule/" + uuid
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building get rule request: %w", err)
+	}
+
+	resp, err := c.do(req)
+	if err != nil {
+		return nil, fmt.Errorf("getting rule %s: %w", uuid, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("get rule returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var envelope GetRuleResponse
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("decoding rule: %w", err)
+	}
+
+	return envelope.Rule, nil
 }
 
 // CreateRuleRequest is the payload for POST /rule.
@@ -165,34 +192,26 @@ func (c *Client) ListRules() ([]RuleSummary, error) {
 
 // GetRule returns the full rule config for a given UUID.
 func (c *Client) GetRule(uuid string) (*Rule, error) {
-	url := c.BaseURL + "/rule/" + uuid
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	raw, err := c.getRuleRaw(uuid)
 	if err != nil {
-		return nil, fmt.Errorf("building get rule request: %w", err)
+		return nil, err
 	}
 
-	resp, err := c.do(req)
-	if err != nil {
-		return nil, fmt.Errorf("getting rule %s: %w", uuid, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("get rule returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	var envelope GetRuleResponse
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	var rule Rule
+	if err := json.Unmarshal(raw, &rule); err != nil {
 		return nil, fmt.Errorf("decoding rule: %w", err)
 	}
 
-	return &envelope.Rule, nil
+	return &rule, nil
 }
 
 // CreateRule creates a new automation rule and returns the UUID.
 func (c *Client) CreateRule(rule CreateRuleRequest) (string, error) {
-	body, err := json.Marshal(rule)
+	// The API requires the payload to be wrapped in a {"rule": ...} envelope.
+	envelope := struct {
+		Rule CreateRuleRequest `json:"rule"`
+	}{Rule: rule}
+	body, err := json.Marshal(envelope)
 	if err != nil {
 		return "", fmt.Errorf("marshaling create rule request: %w", err)
 	}
@@ -222,8 +241,63 @@ func (c *Client) CreateRule(rule CreateRuleRequest) (string, error) {
 }
 
 // UpdateRule updates an existing automation rule.
-func (c *Client) UpdateRule(uuid string, rule UpdateRuleRequest) error {
-	body, err := json.Marshal(rule)
+// It performs a read-modify-write: fetches the current rule to get all API fields,
+// merges in the Terraform-managed fields, strips component IDs (so the API recreates
+// them), and PUTs the complete rule wrapped in the required {"rule": ...} envelope.
+func (c *Client) UpdateRule(uuid string, update UpdateRuleRequest) error {
+	// 1. Fetch current rule as raw JSON to preserve all API-managed fields.
+	raw, err := c.getRuleRaw(uuid)
+	if err != nil {
+		return fmt.Errorf("reading current rule for update: %w", err)
+	}
+
+	// 2. Unmarshal into a generic map so we can merge fields.
+	var ruleMap map[string]interface{}
+	if err := json.Unmarshal(raw, &ruleMap); err != nil {
+		return fmt.Errorf("parsing current rule: %w", err)
+	}
+
+	// 3. Remove read-only fields that the API won't accept on write.
+	delete(ruleMap, "uuid")
+	delete(ruleMap, "created")
+	delete(ruleMap, "updated")
+
+	// 4. Merge Terraform-managed fields.
+	ruleMap["name"] = update.Name
+
+	var trigger interface{}
+	if err := json.Unmarshal(update.Trigger, &trigger); err != nil {
+		return fmt.Errorf("parsing trigger: %w", err)
+	}
+	// Strip IDs from trigger.
+	stripComponentIDs(trigger)
+	ruleMap["trigger"] = trigger
+
+	var components []interface{}
+	for _, comp := range update.Components {
+		var c interface{}
+		if err := json.Unmarshal(comp, &c); err != nil {
+			return fmt.Errorf("parsing component: %w", err)
+		}
+		stripComponentIDs(c)
+		components = append(components, c)
+	}
+	ruleMap["components"] = components
+
+	if update.RuleScopeARIs != nil {
+		ruleMap["ruleScopeARIs"] = update.RuleScopeARIs
+	} else {
+		ruleMap["ruleScopeARIs"] = []string{}
+	}
+	if update.Labels != nil {
+		ruleMap["labels"] = update.Labels
+	} else {
+		ruleMap["labels"] = []string{}
+	}
+
+	// 5. Wrap in the required {"rule": ...} envelope.
+	envelope := map[string]interface{}{"rule": ruleMap}
+	body, err := json.Marshal(envelope)
 	if err != nil {
 		return fmt.Errorf("marshaling update rule request: %w", err)
 	}
@@ -245,6 +319,31 @@ func (c *Client) UpdateRule(uuid string, rule UpdateRuleRequest) error {
 	}
 
 	return nil
+}
+
+// stripComponentIDs recursively removes "id" fields from components so the API
+// assigns new IDs. Also nulls out parentId and conditionParentId since the
+// parent-child relationships are expressed through nesting.
+func stripComponentIDs(v interface{}) {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	delete(m, "id")
+	m["parentId"] = nil
+	m["conditionParentId"] = nil
+
+	if children, ok := m["children"].([]interface{}); ok {
+		for _, child := range children {
+			stripComponentIDs(child)
+		}
+	}
+	if conditions, ok := m["conditions"].([]interface{}); ok {
+		for _, cond := range conditions {
+			stripComponentIDs(cond)
+		}
+	}
 }
 
 // SetRuleState enables or disables a rule.

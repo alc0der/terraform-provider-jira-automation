@@ -151,7 +151,8 @@ func generateHCL(resName string, rule *client.Rule) string {
 	return b.String()
 }
 
-// normalizeJSON round-trips JSON through interface{} to produce compact, key-sorted output.
+// normalizeJSON round-trips JSON through interface{} to produce compact, key-sorted output,
+// stripping API-assigned fields (id, parentId, conditionParentId).
 func normalizeJSON(raw json.RawMessage) string {
 	dec := json.NewDecoder(strings.NewReader(string(raw)))
 	dec.UseNumber()
@@ -159,6 +160,7 @@ func normalizeJSON(raw json.RawMessage) string {
 	if err := dec.Decode(&v); err != nil {
 		return string(raw)
 	}
+	stripAPIFields(v)
 	out, err := json.Marshal(v)
 	if err != nil {
 		return string(raw)
@@ -175,6 +177,7 @@ func normalizeJSONArray(raws []json.RawMessage) string {
 		if err := dec.Decode(&v); err != nil {
 			return "[]"
 		}
+		stripAPIFields(v)
 		arr = append(arr, v)
 	}
 	out, err := json.Marshal(arr)
@@ -182,4 +185,27 @@ func normalizeJSONArray(raws []json.RawMessage) string {
 		return "[]"
 	}
 	return string(out)
+}
+
+// stripAPIFields recursively removes API-assigned fields from component JSON.
+func stripAPIFields(v interface{}) {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	delete(m, "id")
+	delete(m, "parentId")
+	delete(m, "conditionParentId")
+
+	if children, ok := m["children"].([]interface{}); ok {
+		for _, child := range children {
+			stripAPIFields(child)
+		}
+	}
+	if conditions, ok := m["conditions"].([]interface{}); ok {
+		for _, cond := range conditions {
+			stripAPIFields(cond)
+		}
+	}
 }

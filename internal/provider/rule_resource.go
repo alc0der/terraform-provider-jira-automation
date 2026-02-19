@@ -317,12 +317,15 @@ func parseComponentsJSON(s string) ([]json.RawMessage, error) {
 	return components, nil
 }
 
-// normalizeRawJSON round-trips raw JSON through interface{} for canonical output.
+// normalizeRawJSON round-trips raw JSON through interface{} for canonical output,
+// stripping API-assigned fields (id, parentId, conditionParentId) that aren't
+// part of the Terraform config.
 func normalizeRawJSON(raw json.RawMessage) (string, error) {
 	var v interface{}
 	if err := json.Unmarshal(raw, &v); err != nil {
 		return "", err
 	}
+	stripAPIFields(v)
 	out, err := json.Marshal(v)
 	if err != nil {
 		return "", err
@@ -337,6 +340,7 @@ func normalizeRawJSONArray(raws []json.RawMessage) (string, error) {
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return "", err
 		}
+		stripAPIFields(v)
 		arr = append(arr, v)
 	}
 	out, err := json.Marshal(arr)
@@ -344,6 +348,30 @@ func normalizeRawJSONArray(raws []json.RawMessage) (string, error) {
 		return "", err
 	}
 	return string(out), nil
+}
+
+// stripAPIFields recursively removes API-assigned fields from component JSON
+// so the normalized output matches the Terraform config (which doesn't include them).
+func stripAPIFields(v interface{}) {
+	m, ok := v.(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	delete(m, "id")
+	delete(m, "parentId")
+	delete(m, "conditionParentId")
+
+	if children, ok := m["children"].([]interface{}); ok {
+		for _, child := range children {
+			stripAPIFields(child)
+		}
+	}
+	if conditions, ok := m["conditions"].([]interface{}); ok {
+		for _, cond := range conditions {
+			stripAPIFields(cond)
+		}
+	}
 }
 
 func toStringSlice(ctx context.Context, list types.List) []string {
