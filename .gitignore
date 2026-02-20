@@ -8,5 +8,8 @@
 *.tfstate.backup
 *.tfrc
 
+# GoReleaser
+/dist/
+
 # Environment
 .env
