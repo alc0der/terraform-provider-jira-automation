@@ -72,7 +72,7 @@ func main() {
 		log.Fatal("Set ATLASSIAN_SITE_URL, ATLASSIAN_USER, and ATLASSIAN_TOKEN (or JIRA_* equivalents)")
 	}
 
-	c, err := client.New(siteURL, email, apiToken)
+	c, err := client.New(siteURL, email, apiToken, "", "")
 	if err != nil {
 		log.Fatalf("creating client: %v", err)
 	}

@@ -2,10 +2,22 @@
 
 A Terraform provider for managing Jira Automation rules via the Automation Rule Management REST API.
 
+## Why this provider?
+
+**Use any coding agent, not just Rovo.** Jira Automation rules are defined as HCL — plain text that any AI coding assistant (Claude Code, Cursor, Copilot, etc.) can read, write, and refactor. You're not locked into Atlassian's own AI tooling to manage your automations programmatically.
+
+**Structured blocks for common patterns.** High-level `trigger` types like `status_transition` let you express common automation triggers in a few lines of HCL instead of hand-crafting nested JSON. The provider fills in the boilerplate (cloud IDs, scope ARIs, envelope fields) automatically.
+
+**Raw JSON fallback for everything else.** When a trigger or component type isn't covered by a structured block yet, `trigger_json` and `components_json` accept any valid JSON — so you're never blocked. Use `jsonencode()` and go.
+
+**Easy debugging.** `terraform plan` diffs your rule components against the live API state, making it straightforward to see exactly what changed and why a rule isn't firing. Semantic JSON comparison means you only see meaningful diffs, not whitespace noise.
+
+**Agent skills bridge the documentation gap.** The Jira Automation REST API is largely undocumented. This provider ships with agent skill files (`.claude/skills/`) that capture the tacit knowledge — envelope requirements, read-modify-write patterns, component ID handling — so coding agents can work with the API without you having to reverse-engineer it yourself.
+
 ## Prerequisites
 
 - [Go](https://go.dev/dl/) 1.23+
-- [Terraform](https://developer.hashicorp.com/terraform/install) 1.0+
+- [Terraform](https://developer.hashicorp.com/terraform/install) 1.5+ (required for `import` blocks and config generation)
 - A Jira Cloud site with an [API token](https://id.atlassian.com/manage-profile/security/api-tokens)
 
 ## Setup (step by step)

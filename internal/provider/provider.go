@@ -20,9 +20,11 @@ type jiraAutomationProvider struct {
 }
 
 type jiraAutomationProviderModel struct {
-	SiteURL  types.String `tfsdk:"site_url"`
-	Email    types.String `tfsdk:"email"`
-	APIToken types.String `tfsdk:"api_token"`
+	SiteURL      types.String `tfsdk:"site_url"`
+	Email        types.String `tfsdk:"email"`
+	APIToken     types.String `tfsdk:"api_token"`
+	WebhookUser  types.String `tfsdk:"webhook_user"`
+	WebhookToken types.String `tfsdk:"webhook_token"`
 }
 
 func New(version string) func() provider.Provider {
@@ -53,6 +55,15 @@ func (p *jiraAutomationProvider) Schema(_ context.Context, _ provider.SchemaRequ
 				Optional:    true,
 				Sensitive:   true,
 			},
+			"webhook_user": schema.StringAttribute{
+				Description: "Email for outgoing webhook Basic auth (service account). Can also be set via JIRA_WEBHOOK_USER env var.",
+				Optional:    true,
+			},
+			"webhook_token": schema.StringAttribute{
+				Description: "API token for outgoing webhook Basic auth. Can also be set via JIRA_WEBHOOK_TOKEN env var.",
+				Optional:    true,
+				Sensitive:   true,
+			},
 		},
 	}
 }
@@ -67,6 +78,8 @@ func (p *jiraAutomationProvider) Configure(ctx context.Context, req provider.Con
 	siteURL := stringValueOrEnv(config.SiteURL, "JIRA_SITE_URL", "ATLASSIAN_SITE_URL")
 	email := stringValueOrEnv(config.Email, "JIRA_EMAIL", "ATLASSIAN_USER")
 	apiToken := stringValueOrEnv(config.APIToken, "JIRA_API_TOKEN", "ATLASSIAN_TOKEN")
+	webhookUser := stringValueOrEnv(config.WebhookUser, "JIRA_WEBHOOK_USER")
+	webhookToken := stringValueOrEnv(config.WebhookToken, "JIRA_WEBHOOK_TOKEN")
 
 	if siteURL == "" {
 		resp.Diagnostics.AddError("Missing site_url", "site_url must be set in provider config or JIRA_SITE_URL / ATLASSIAN_SITE_URL env var.")
@@ -81,7 +94,7 @@ func (p *jiraAutomationProvider) Configure(ctx context.Context, req provider.Con
 		return
 	}
 
-	c, err := client.New(siteURL, email, apiToken)
+	c, err := client.New(siteURL, email, apiToken, webhookUser, webhookToken)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create API client", err.Error())
 		return

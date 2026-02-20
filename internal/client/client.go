@@ -11,12 +11,14 @@ import (
 )
 
 type Client struct {
-	BaseURL    string
-	SiteURL    string
-	CloudID    string
-	Email      string
-	APIToken   string
-	HTTPClient *http.Client
+	BaseURL      string
+	SiteURL      string
+	CloudID      string
+	Email        string
+	APIToken     string
+	WebhookUser  string
+	WebhookToken string
+	HTTPClient   *http.Client
 }
 
 // TenantInfo is the response from /_edge/tenant_info.
@@ -106,7 +108,7 @@ type SetRuleStateRequest struct {
 }
 
 // New creates a new API client. It resolves the Cloud ID from the site URL.
-func New(siteURL, email, apiToken string) (*Client, error) {
+func New(siteURL, email, apiToken, webhookUser, webhookToken string) (*Client, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	// Resolve cloud ID from tenant info.
@@ -137,12 +139,14 @@ func New(siteURL, email, apiToken string) (*Client, error) {
 	baseURL := fmt.Sprintf("https://api.atlassian.com/automation/public/jira/%s/rest/v1", tenant.CloudID)
 
 	return &Client{
-		BaseURL:    baseURL,
-		SiteURL:    siteURL,
-		CloudID:    tenant.CloudID,
-		Email:      email,
-		APIToken:   apiToken,
-		HTTPClient: httpClient,
+		BaseURL:      baseURL,
+		SiteURL:      siteURL,
+		CloudID:      tenant.CloudID,
+		Email:        email,
+		APIToken:     apiToken,
+		WebhookUser:  webhookUser,
+		WebhookToken: webhookToken,
+		HTTPClient:   httpClient,
 	}, nil
 }
 

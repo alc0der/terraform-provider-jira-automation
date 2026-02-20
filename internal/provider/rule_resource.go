@@ -8,6 +8,7 @@ import (
 	"terraform-provider-jira-automation/internal/client"
 
 	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/objectvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -40,6 +41,7 @@ type ruleResourceModel struct {
 	ProjectID      types.String         `tfsdk:"project_id"`
 	Trigger        *triggerModel        `tfsdk:"trigger"`
 	TriggerJSON    jsontypes.Normalized `tfsdk:"trigger_json"`
+	Components     []componentModel     `tfsdk:"components"`
 	ComponentsJSON jsontypes.Normalized `tfsdk:"components_json"`
 }
 
@@ -123,10 +125,64 @@ func (r *ruleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				CustomType:  jsontypes.NormalizedType{},
 				Description: "Trigger configuration as a JSON string. Mutually exclusive with trigger.",
 			},
+			"components": schema.ListNestedAttribute{
+				Optional:    true,
+				Description: "Structured component configuration. Mutually exclusive with components_json.",
+				Validators: []validator.List{
+					listvalidator.ExactlyOneOf(path.MatchRoot("components_json")),
+				},
+				NestedObject: schema.NestedAttributeObject{
+					Attributes: map[string]schema.Attribute{
+						"type": schema.StringAttribute{
+							Required:    true,
+							Description: "Component type (e.g. condition, log, comment, add_release_related_work).",
+						},
+						"args": schema.MapAttribute{
+							Optional:    true,
+							ElementType: types.StringType,
+							Description: "Component arguments as key-value pairs.",
+						},
+						"then": schema.ListNestedAttribute{
+							Optional:    true,
+							Description: "Actions to execute when the condition is true.",
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"type": schema.StringAttribute{
+										Required:    true,
+										Description: "Action type.",
+									},
+									"args": schema.MapAttribute{
+										Optional:    true,
+										ElementType: types.StringType,
+										Description: "Action arguments as key-value pairs.",
+									},
+								},
+							},
+						},
+						"else": schema.ListNestedAttribute{
+							Optional:    true,
+							Description: "Actions to execute when the condition is false.",
+							NestedObject: schema.NestedAttributeObject{
+								Attributes: map[string]schema.Attribute{
+									"type": schema.StringAttribute{
+										Required:    true,
+										Description: "Action type.",
+									},
+									"args": schema.MapAttribute{
+										Optional:    true,
+										ElementType: types.StringType,
+										Description: "Action arguments as key-value pairs.",
+									},
+								},
+							},
+						},
+					},
+				},
+			},
 			"components_json": schema.StringAttribute{
-				Required:    true,
+				Optional:    true,
 				CustomType:  jsontypes.NormalizedType{},
-				Description: "Components (actions/conditions) as a JSON array string.",
+				Description: "Components (actions/conditions) as a JSON array string. Mutually exclusive with components.",
 			},
 		},
 	}
@@ -158,9 +214,9 @@ func (r *ruleResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	components, err := parseComponentsJSON(plan.ComponentsJSON.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid components_json", err.Error())
+	components, d := r.resolveComponentsJSON(ctx, &plan)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -243,9 +299,9 @@ func (r *ruleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	components, err := parseComponentsJSON(plan.ComponentsJSON.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Invalid components_json", err.Error())
+	components, cd := r.resolveComponentsJSON(ctx, &plan)
+	resp.Diagnostics.Append(cd...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -378,13 +434,23 @@ func (r *ruleResource) readIntoModel(ctx context.Context, uuid string, model *ru
 		model.TriggerJSON = jsontypes.NewNormalizedValue(triggerNorm)
 	}
 
-	// Components JSON — normalize through interface{} for canonical key ordering.
-	componentsNorm, err := normalizeRawJSONArray(rule.Components)
-	if err != nil {
-		diags.AddError("Error normalizing components", err.Error())
-		return diags
+	// Components — if the user used the structured components block, parse the API
+	// response back into component models. Otherwise, populate components_json.
+	if model.Components != nil {
+		parsed, err := ParseComponents(rule.Components, ctx)
+		if err != nil {
+			diags.AddError("Error parsing components from API", err.Error())
+			return diags
+		}
+		model.Components = parsed
+	} else {
+		componentsNorm, err := normalizeRawJSONArray(rule.Components)
+		if err != nil {
+			diags.AddError("Error normalizing components", err.Error())
+			return diags
+		}
+		model.ComponentsJSON = jsontypes.NewNormalizedValue(componentsNorm)
 	}
-	model.ComponentsJSON = jsontypes.NewNormalizedValue(componentsNorm)
 
 	return diags
 }
@@ -415,6 +481,28 @@ func (r *ruleResource) resolveTriggerJSON(ctx context.Context, model *ruleResour
 	}
 
 	return json.RawMessage(model.TriggerJSON.ValueString()), diags
+}
+
+// resolveComponentsJSON returns the components JSON from either the structured
+// components block or the raw components_json attribute.
+func (r *ruleResource) resolveComponentsJSON(ctx context.Context, model *ruleResourceModel) ([]json.RawMessage, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if model.Components != nil {
+		raws, err := BuildComponentsJSON(model.Components, r.client.CloudID, r.client.WebhookUser, r.client.WebhookToken, ctx)
+		if err != nil {
+			diags.AddError("Error building components JSON", err.Error())
+			return nil, diags
+		}
+		return raws, diags
+	}
+
+	components, err := parseComponentsJSON(model.ComponentsJSON.ValueString())
+	if err != nil {
+		diags.AddError("Invalid components_json", err.Error())
+		return nil, diags
+	}
+	return components, diags
 }
 
 // Helper functions
