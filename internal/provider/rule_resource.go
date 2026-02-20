@@ -437,7 +437,7 @@ func (r *ruleResource) readIntoModel(ctx context.Context, uuid string, model *ru
 	// Components — if the user used the structured components block, parse the API
 	// response back into component models. Otherwise, populate components_json.
 	if model.Components != nil {
-		parsed, err := ParseComponents(rule.Components, ctx)
+		parsed, err := ParseComponents(rule.Components, ctx, r.client.ReverseAliases)
 		if err != nil {
 			diags.AddError("Error parsing components from API", err.Error())
 			return diags
@@ -489,7 +489,7 @@ func (r *ruleResource) resolveComponentsJSON(ctx context.Context, model *ruleRes
 	var diags diag.Diagnostics
 
 	if model.Components != nil {
-		raws, err := BuildComponentsJSON(model.Components, r.client.CloudID, r.client.WebhookUser, r.client.WebhookToken, ctx)
+		raws, err := BuildComponentsJSON(model.Components, r.client.CloudID, r.client.WebhookUser, r.client.WebhookToken, ctx, r.client.FieldAliases)
 		if err != nil {
 			diags.AddError("Error building components JSON", err.Error())
 			return nil, diags

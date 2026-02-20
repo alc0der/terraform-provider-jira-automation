@@ -25,6 +25,7 @@ type jiraAutomationProviderModel struct {
 	APIToken     types.String `tfsdk:"api_token"`
 	WebhookUser  types.String `tfsdk:"webhook_user"`
 	WebhookToken types.String `tfsdk:"webhook_token"`
+	FieldAliases types.Map    `tfsdk:"field_aliases"`
 }
 
 func New(version string) func() provider.Provider {
@@ -64,6 +65,12 @@ func (p *jiraAutomationProvider) Schema(_ context.Context, _ provider.SchemaRequ
 				Optional:    true,
 				Sensitive:   true,
 			},
+			"field_aliases": schema.MapAttribute{
+				Description: "Map of friendly alias names to Jira custom field IDs (e.g. release_version = \"customfield_10709\"). " +
+					"Aliases can be used in smart values ({{issue.ALIAS}}) and as bare arg values; the provider resolves them to field IDs on write and reverses on read.",
+				Optional:    true,
+				ElementType: types.StringType,
+			},
 		},
 	}
 }
@@ -94,7 +101,17 @@ func (p *jiraAutomationProvider) Configure(ctx context.Context, req provider.Con
 		return
 	}
 
-	c, err := client.New(siteURL, email, apiToken, webhookUser, webhookToken)
+	// Extract field aliases map (nil if not configured).
+	var aliases map[string]string
+	if !config.FieldAliases.IsNull() && !config.FieldAliases.IsUnknown() {
+		aliases = make(map[string]string)
+		resp.Diagnostics.Append(config.FieldAliases.ElementsAs(ctx, &aliases, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+
+	c, err := client.New(siteURL, email, apiToken, webhookUser, webhookToken, aliases)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create API client", err.Error())
 		return

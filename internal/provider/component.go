@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -68,6 +69,80 @@ var apiTypeToComponentUserType = func() map[string]string {
 	}
 	return m
 }()
+
+// --- Field alias resolution ---
+
+// resolveAliases replaces alias names with field IDs in arg values.
+// - Smart values: {{issue.ALIAS...}} → {{issue.FIELD_ID...}}
+// - Bare arg value: if the entire value exactly matches an alias key, replace with field ID.
+func resolveAliases(args map[string]string, aliases map[string]string) map[string]string {
+	if len(aliases) == 0 {
+		return args
+	}
+	// Sort aliases by length descending to avoid partial matches.
+	sorted := sortedKeys(aliases)
+	result := make(map[string]string, len(args))
+	for k, v := range args {
+		// Smart value replacement in any string value.
+		resolved := v
+		for _, alias := range sorted {
+			fieldID := aliases[alias]
+			resolved = replaceSmartValueField(resolved, alias, fieldID)
+		}
+		// Bare value: if the entire resolved value is an alias, replace it.
+		if id, ok := aliases[resolved]; ok {
+			resolved = id
+		}
+		result[k] = resolved
+	}
+	return result
+}
+
+// unresolveAliases is the reverse: replaces field IDs with alias names.
+func unresolveAliases(args map[string]string, reverse map[string]string) map[string]string {
+	if len(reverse) == 0 {
+		return args
+	}
+	sorted := sortedKeys(reverse)
+	result := make(map[string]string, len(args))
+	for k, v := range args {
+		resolved := v
+		for _, fieldID := range sorted {
+			alias := reverse[fieldID]
+			resolved = replaceSmartValueField(resolved, fieldID, alias)
+		}
+		if alias, ok := reverse[resolved]; ok {
+			resolved = alias
+		}
+		result[k] = resolved
+	}
+	return result
+}
+
+// replaceSmartValueField replaces {{issue.OLD...}} and {{triggerIssue.OLD...}} with the new field name.
+func replaceSmartValueField(s, oldField, newField string) string {
+	// Match {{issue.OLD}} {{issue.OLD.xxx}} {{issue.OLD}} etc.
+	// We look for the pattern and replace just the field name part.
+	old1 := "{{issue." + oldField
+	new1 := "{{issue." + newField
+	old2 := "{{triggerIssue." + oldField
+	new2 := "{{triggerIssue." + newField
+	s = strings.ReplaceAll(s, old1, new1)
+	s = strings.ReplaceAll(s, old2, new2)
+	return s
+}
+
+// sortedKeys returns map keys sorted by length descending (longest first).
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		return len(keys[i]) > len(keys[j])
+	})
+	return keys
+}
 
 // --- Builders ---
 
@@ -393,7 +468,7 @@ func BuildConditionJSON(condArgs map[string]string, thenActions, elseActions []j
 
 // --- Condition parser ---
 
-func parseConditionContainer(raw json.RawMessage, ctx context.Context) (*componentModel, error) {
+func parseConditionContainer(raw json.RawMessage, ctx context.Context, reverse map[string]string) (*componentModel, error) {
 	var container struct {
 		Children []json.RawMessage `json:"children"`
 	}
@@ -433,9 +508,10 @@ func parseConditionContainer(raw json.RawMessage, ctx context.Context) (*compone
 		"operator": comparator.Value.Operator,
 		"second":   comparator.Value.Second,
 	}
+	condArgs = unresolveAliases(condArgs, reverse)
 
 	// Parse THEN actions from IF block children.
-	thenActions, err := parseInnerActions(ifBlock.Children)
+	thenActions, err := parseInnerActions(ifBlock.Children, reverse)
 	if err != nil {
 		return nil, fmt.Errorf("parsing then actions: %w", err)
 	}
@@ -450,7 +526,7 @@ func parseConditionContainer(raw json.RawMessage, ctx context.Context) (*compone
 			return nil, fmt.Errorf("parsing ELSE block: %w", err)
 		}
 		if len(elseBlock.Children) > 0 {
-			elseActions, err = parseInnerActions(elseBlock.Children)
+			elseActions, err = parseInnerActions(elseBlock.Children, reverse)
 			if err != nil {
 				return nil, fmt.Errorf("parsing else actions: %w", err)
 			}
@@ -478,7 +554,7 @@ func parseConditionContainer(raw json.RawMessage, ctx context.Context) (*compone
 // parseInnerActions parses a list of action JSON blobs into innerActionModels.
 // It detects debug log actions (prefixed with debugLogPrefix), skips them, and
 // sets debug="true" on the following add_release_related_work action.
-func parseInnerActions(raws []json.RawMessage) ([]innerActionModel, error) {
+func parseInnerActions(raws []json.RawMessage, reverse map[string]string) ([]innerActionModel, error) {
 	var actions []innerActionModel
 	sawDebugLog := false
 
@@ -537,6 +613,7 @@ func parseInnerActions(raws []json.RawMessage) ([]innerActionModel, error) {
 		}
 		sawDebugLog = false
 
+		args = unresolveAliases(args, reverse)
 		argsMap, err := stringMapToTypesMapInner(args)
 		if err != nil {
 			return nil, err
@@ -553,7 +630,8 @@ func parseInnerActions(raws []json.RawMessage) ([]innerActionModel, error) {
 // --- Top-level orchestrators ---
 
 // BuildComponentsJSON builds the full API components JSON from the structured components.
-func BuildComponentsJSON(components []componentModel, cloudID, webhookUser, webhookToken string, ctx context.Context) ([]json.RawMessage, error) {
+// aliases maps friendly names → field IDs; pass nil for no alias resolution.
+func BuildComponentsJSON(components []componentModel, cloudID, webhookUser, webhookToken string, ctx context.Context, aliases map[string]string) ([]json.RawMessage, error) {
 	var result []json.RawMessage
 
 	for i, comp := range components {
@@ -565,10 +643,11 @@ func BuildComponentsJSON(components []componentModel, cloudID, webhookUser, webh
 			if err != nil {
 				return nil, fmt.Errorf("component %d: %w", i, err)
 			}
+			condArgs = resolveAliases(condArgs, aliases)
 
 			var thenActions []json.RawMessage
 			for j, action := range comp.Then {
-				raws, err := buildInnerAction(action, cloudID, webhookUser, webhookToken, ctx)
+				raws, err := buildInnerAction(action, cloudID, webhookUser, webhookToken, ctx, aliases)
 				if err != nil {
 					return nil, fmt.Errorf("component %d then[%d]: %w", i, j, err)
 				}
@@ -577,7 +656,7 @@ func BuildComponentsJSON(components []componentModel, cloudID, webhookUser, webh
 
 			var elseActions []json.RawMessage
 			for j, action := range comp.Else {
-				raws, err := buildInnerAction(action, cloudID, webhookUser, webhookToken, ctx)
+				raws, err := buildInnerAction(action, cloudID, webhookUser, webhookToken, ctx, aliases)
 				if err != nil {
 					return nil, fmt.Errorf("component %d else[%d]: %w", i, j, err)
 				}
@@ -595,6 +674,7 @@ func BuildComponentsJSON(components []componentModel, cloudID, webhookUser, webh
 			if err != nil {
 				return nil, fmt.Errorf("component %d: %w", i, err)
 			}
+			args = resolveAliases(args, aliases)
 			raws, err := buildActionWithDebug(compType, args, cloudID, webhookUser, webhookToken)
 			if err != nil {
 				return nil, fmt.Errorf("component %d: %w", i, err)
@@ -608,18 +688,20 @@ func BuildComponentsJSON(components []componentModel, cloudID, webhookUser, webh
 
 // buildInnerAction builds one or more action JSONs from the innerActionModel.
 // For add_release_related_work with debug="true", multiple actions are returned.
-func buildInnerAction(action innerActionModel, cloudID, webhookUser, webhookToken string, ctx context.Context) ([]json.RawMessage, error) {
+func buildInnerAction(action innerActionModel, cloudID, webhookUser, webhookToken string, ctx context.Context, aliases map[string]string) ([]json.RawMessage, error) {
 	actionType := action.Type.ValueString()
 	args, err := typesMapToStringMap(ctx, action.Args)
 	if err != nil {
 		return nil, err
 	}
+	args = resolveAliases(args, aliases)
 	return buildActionWithDebug(actionType, args, cloudID, webhookUser, webhookToken)
 }
 
 // ParseComponents parses the full API components JSON back into structured componentModels.
 // It detects debug log actions at the top level and sets debug="true" on the following action.
-func ParseComponents(raws []json.RawMessage, ctx context.Context) ([]componentModel, error) {
+// reverse maps field IDs → alias names; pass nil for no alias resolution.
+func ParseComponents(raws []json.RawMessage, ctx context.Context, reverse map[string]string) ([]componentModel, error) {
 	var result []componentModel
 	sawDebugLog := false
 
@@ -647,7 +729,7 @@ func ParseComponents(raws []json.RawMessage, ctx context.Context) ([]componentMo
 
 		if envelope.Type == "jira.condition.container.block" {
 			sawDebugLog = false
-			model, err := parseConditionContainer(raw, ctx)
+			model, err := parseConditionContainer(raw, ctx, reverse)
 			if err != nil {
 				return nil, fmt.Errorf("component %d: %w", i, err)
 			}
@@ -668,6 +750,7 @@ func ParseComponents(raws []json.RawMessage, ctx context.Context) ([]componentMo
 			}
 			sawDebugLog = false
 
+			args = unresolveAliases(args, reverse)
 			argsMap, err := stringMapToTypesMap(ctx, args)
 			if err != nil {
 				return nil, fmt.Errorf("component %d: %w", i, err)

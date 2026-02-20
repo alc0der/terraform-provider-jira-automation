@@ -11,14 +11,16 @@ import (
 )
 
 type Client struct {
-	BaseURL      string
-	SiteURL      string
-	CloudID      string
-	Email        string
-	APIToken     string
-	WebhookUser  string
-	WebhookToken string
-	HTTPClient   *http.Client
+	BaseURL        string
+	SiteURL        string
+	CloudID        string
+	Email          string
+	APIToken       string
+	WebhookUser    string
+	WebhookToken   string
+	HTTPClient     *http.Client
+	FieldAliases   map[string]string // alias → fieldID
+	ReverseAliases map[string]string // fieldID → alias
 }
 
 // TenantInfo is the response from /_edge/tenant_info.
@@ -108,7 +110,9 @@ type SetRuleStateRequest struct {
 }
 
 // New creates a new API client. It resolves the Cloud ID from the site URL.
-func New(siteURL, email, apiToken, webhookUser, webhookToken string) (*Client, error) {
+// aliases maps friendly names to Jira field IDs (e.g. "release_version" → "customfield_10709").
+// Pass nil for no aliases.
+func New(siteURL, email, apiToken, webhookUser, webhookToken string, aliases map[string]string) (*Client, error) {
 	httpClient := &http.Client{Timeout: 30 * time.Second}
 
 	// Resolve cloud ID from tenant info.
@@ -138,15 +142,25 @@ func New(siteURL, email, apiToken, webhookUser, webhookToken string) (*Client, e
 
 	baseURL := fmt.Sprintf("https://api.atlassian.com/automation/public/jira/%s/rest/v1", tenant.CloudID)
 
+	if aliases == nil {
+		aliases = map[string]string{}
+	}
+	reverse := make(map[string]string, len(aliases))
+	for alias, fieldID := range aliases {
+		reverse[fieldID] = alias
+	}
+
 	return &Client{
-		BaseURL:      baseURL,
-		SiteURL:      siteURL,
-		CloudID:      tenant.CloudID,
-		Email:        email,
-		APIToken:     apiToken,
-		WebhookUser:  webhookUser,
-		WebhookToken: webhookToken,
-		HTTPClient:   httpClient,
+		BaseURL:        baseURL,
+		SiteURL:        siteURL,
+		CloudID:        tenant.CloudID,
+		Email:          email,
+		APIToken:       apiToken,
+		WebhookUser:    webhookUser,
+		WebhookToken:   webhookToken,
+		HTTPClient:     httpClient,
+		FieldAliases:   aliases,
+		ReverseAliases: reverse,
 	}, nil
 }
 
