@@ -102,13 +102,11 @@ An expired token on this endpoint returns `400` (not `401`), same as the main ru
 
 The `ATLASSIAN_TOKEN` has a short lifetime. An expired token returns `401: "Unauthorized"` on reads and `400: "The request body could not be parsed"` on writes. Always verify auth with a quick GET before debugging write failures.
 
-## OpenAPI Spec Location
+## OpenAPI Spec & Component Type Schemas
 
-The full schema is embedded in the docs page source at:
-```
-https://developer.atlassian.com/cloud/automation/rest/
-```
-Extract it from `window.__DATA__.schema.components.schemas`. Key schemas: `RuleWriteRequest`, `RuleUpdateRequest`, `ComponentConfigDTO`, `TriggerConfigDTO`.
+- **Official OAS:** `atlassian-automation-oas.json` (in this skill directory). Downloaded from `https://developer.atlassian.com/cloud/automation/swagger.v3.json`. Defines endpoints, request/response envelopes, and base schemas (`RuleWriteRequest`, `ComponentConfigDTO`, `TriggerConfigDTO`, etc.). The official spec leaves `ComponentConfigDTO.type` as a free-form string and `value` as `oneOf [string, object]`.
+
+- **OAS Overlay:** `component-types.overlay.json` (in this skill directory). An [OAS Overlay 1.0](https://spec.openapis.org/overlay/v1.0.0.html) that enriches the official spec with discovered component types. Adds `x-known-values` to `ComponentConfigDTO.type` and `TriggerConfigDTO.type` with all known type strings, and adds named value schemas (e.g., `ConditionValue_comparator`, `ActionValue_webhook`) under `components.schemas`. Each has `x-type`, `x-ui-name`, and `x-schema-version` annotations. Apply with any OAS overlay tool to produce a merged spec.
 
 ## Debugging Checklist
 
@@ -118,3 +116,27 @@ When a write operation returns 400:
 3. Check you're sending the full rule object (not just changed fields)
 4. Check component IDs are stripped (or consistent with the existing rule)
 5. If all else fails, extract the OpenAPI spec and validate your payload against the schema
+
+---
+
+## Component Type Quick Reference
+
+Full schemas are in `component-types.schema.json`. Here are the most commonly needed types:
+
+**Conditions:**
+- `jira.issue.condition` (sv3) — issue field check (NOT_EMPTY, EQUALS, etc.). Limited custom field support.
+- `jira.comparator.condition` (sv1) — smart values comparison. Better for custom fields. `{"first": "{{...}}", "second": "", "operator": "NOT_EQUALS"}`
+- `jira.jql.condition` (sv1) — JQL check. `{"jql": "..."}`
+- `jira.condition.container.block` + `jira.condition.if.block` — IF/ELSE structure (see "IF Condition Structure" above)
+
+**Actions:**
+- `codebarrel.action.log` (sv1) — value is a plain string
+- `jira.issue.edit` (sv12) — uses operations array
+- `jira.issue.transition` (sv11) — uses operations array + destinationStatus
+- `jira.issue.outgoing.webhook` (sv1) — web request with headers, method, body
+- `jira.issue.create` (sv12) — uses operations array
+
+**Triggers:**
+- `jira.issue.event.trigger:<event>` — `:transitioned`, `:created`, `:commented`, etc.
+- `jira.jql.scheduled` (sv1) — cron/interval schedule
+- `jira.incoming.webhook` (sv1) — incoming webhook with token
