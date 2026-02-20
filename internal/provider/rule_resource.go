@@ -8,13 +8,16 @@ import (
 	"terraform-provider-jira-automation/internal/client"
 
 	"github.com/hashicorp/terraform-plugin-framework-jsontypes/jsontypes"
+	"github.com/hashicorp/terraform-plugin-framework-validators/objectvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -34,6 +37,8 @@ type ruleResourceModel struct {
 	State          types.String         `tfsdk:"state"`
 	Scope          types.List           `tfsdk:"scope"`
 	Labels         types.List           `tfsdk:"labels"`
+	ProjectID      types.String         `tfsdk:"project_id"`
+	Trigger        *triggerModel        `tfsdk:"trigger"`
 	TriggerJSON    jsontypes.Normalized `tfsdk:"trigger_json"`
 	ComponentsJSON jsontypes.Normalized `tfsdk:"components_json"`
 }
@@ -91,10 +96,32 @@ func (r *ruleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 					labelsAddOnlyModifier{},
 				},
 			},
+			"project_id": schema.StringAttribute{
+				Optional:    true,
+				Description: "Jira project numeric ID. Used to scope event-based triggers to a project.",
+			},
+			"trigger": schema.SingleNestedAttribute{
+				Optional:    true,
+				Description: "Structured trigger configuration. Mutually exclusive with trigger_json.",
+				Validators: []validator.Object{
+					objectvalidator.ExactlyOneOf(path.MatchRoot("trigger_json")),
+				},
+				Attributes: map[string]schema.Attribute{
+					"type": schema.StringAttribute{
+						Required:    true,
+						Description: "Trigger type (e.g. status_transition).",
+					},
+					"args": schema.MapAttribute{
+						Optional:    true,
+						ElementType: types.StringType,
+						Description: "Trigger arguments as key-value pairs.",
+					},
+				},
+			},
 			"trigger_json": schema.StringAttribute{
-				Required:    true,
+				Optional:    true,
 				CustomType:  jsontypes.NormalizedType{},
-				Description: "Trigger configuration as a JSON string.",
+				Description: "Trigger configuration as a JSON string. Mutually exclusive with trigger.",
 			},
 			"components_json": schema.StringAttribute{
 				Required:    true,
@@ -125,7 +152,12 @@ func (r *ruleResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	trigger := json.RawMessage(plan.TriggerJSON.ValueString())
+	trigger, diags := r.resolveTriggerJSON(ctx, &plan)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	components, err := parseComponentsJSON(plan.ComponentsJSON.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid components_json", err.Error())
@@ -152,7 +184,7 @@ func (r *ruleResource) Create(ctx context.Context, req resource.CreateRequest, r
 	}
 
 	// Read back the created rule to populate all computed fields.
-	diags := r.readIntoModel(ctx, uuid, &plan)
+	diags = r.readIntoModel(ctx, uuid, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -205,7 +237,12 @@ func (r *ruleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 	uuid := state.ID.ValueString()
 
-	trigger := json.RawMessage(plan.TriggerJSON.ValueString())
+	trigger, d := r.resolveTriggerJSON(ctx, &plan)
+	resp.Diagnostics.Append(d...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	components, err := parseComponentsJSON(plan.ComponentsJSON.ValueString())
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid components_json", err.Error())
@@ -318,13 +355,28 @@ func (r *ruleResource) readIntoModel(ctx context.Context, uuid string, model *ru
 		model.Labels = types.ListNull(types.StringType)
 	}
 
-	// Trigger JSON — normalize through interface{} for canonical key ordering.
-	triggerNorm, err := normalizeRawJSON(rule.Trigger)
-	if err != nil {
-		diags.AddError("Error normalizing trigger", err.Error())
-		return diags
+	// Trigger — if the user used the structured trigger block, parse the API
+	// response back into the trigger model. Otherwise, populate trigger_json.
+	if model.Trigger != nil {
+		triggerType, args, err := ParseTrigger(rule.Trigger)
+		if err != nil {
+			diags.AddError("Error parsing trigger from API", err.Error())
+			return diags
+		}
+		argsMap, d := types.MapValueFrom(ctx, types.StringType, args)
+		diags.Append(d...)
+		model.Trigger = &triggerModel{
+			Type: types.StringValue(triggerType),
+			Args: argsMap,
+		}
+	} else {
+		triggerNorm, err := normalizeRawJSON(rule.Trigger)
+		if err != nil {
+			diags.AddError("Error normalizing trigger", err.Error())
+			return diags
+		}
+		model.TriggerJSON = jsontypes.NewNormalizedValue(triggerNorm)
 	}
-	model.TriggerJSON = jsontypes.NewNormalizedValue(triggerNorm)
 
 	// Components JSON — normalize through interface{} for canonical key ordering.
 	componentsNorm, err := normalizeRawJSONArray(rule.Components)
@@ -335,6 +387,34 @@ func (r *ruleResource) readIntoModel(ctx context.Context, uuid string, model *ru
 	model.ComponentsJSON = jsontypes.NewNormalizedValue(componentsNorm)
 
 	return diags
+}
+
+// resolveTriggerJSON returns the trigger JSON from either the structured trigger
+// block or the raw trigger_json attribute.
+func (r *ruleResource) resolveTriggerJSON(ctx context.Context, model *ruleResourceModel) (json.RawMessage, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	if model.Trigger != nil {
+		triggerType := model.Trigger.Type.ValueString()
+
+		args := make(map[string]string)
+		if !model.Trigger.Args.IsNull() && !model.Trigger.Args.IsUnknown() {
+			diags.Append(model.Trigger.Args.ElementsAs(ctx, &args, false)...)
+			if diags.HasError() {
+				return nil, diags
+			}
+		}
+
+		projectID := model.ProjectID.ValueString()
+		raw, err := BuildTriggerJSON(triggerType, args, r.client.CloudID, projectID)
+		if err != nil {
+			diags.AddError("Error building trigger JSON", err.Error())
+			return nil, diags
+		}
+		return raw, diags
+	}
+
+	return json.RawMessage(model.TriggerJSON.ValueString()), diags
 }
 
 // Helper functions
