@@ -10,15 +10,56 @@ The binary is `terraform-provider-jira-automation` (gitignored).
 
 ## Running Tests
 
+### Unit tests (no credentials needed)
+
 ```bash
-go test ./...
+go test ./... -short -v
+# or
+make test
 ```
+
+### Acceptance tests (requires live Jira instance)
+
+```bash
+TF_ACC=1 go test ./... -v -timeout 120m
+# or
+make testacc
+```
+
+Run a single acceptance test:
+
+```bash
+TF_ACC=1 go test ./internal/provider/ -v -run TestAccRuleResource_basic -timeout 10m
+```
+
+### Required environment variables
+
+| Variable | Required by |
+|----------|-------------|
+| `TF_ACC=1` | All acceptance tests (framework gate) |
+| `JIRA_SITE_URL` (or `ATLASSIAN_SITE_URL`) | All acceptance tests |
+| `JIRA_EMAIL` (or `ATLASSIAN_USER`) | All acceptance tests |
+| `JIRA_API_TOKEN` (or `ATLASSIAN_TOKEN`) | All acceptance tests |
+| `JIRA_TEST_PROJECT_ID` | Tests with project-scoped triggers |
+| `JIRA_WEBHOOK_USER` | `add_release_related_work` tests |
+| `JIRA_WEBHOOK_TOKEN` | `add_release_related_work` tests |
+
+### Test naming conventions
+
+- Unit tests: `Test*` (e.g. `TestBuildLog`, `TestResolveAliases`)
+- Acceptance tests: `TestAcc*` (e.g. `TestAccRuleResource_basic`)
+- All acceptance test rules are prefixed `tf-acc-` and labeled `tf-acc-test`
+
+### Cleanup
+
+Acceptance test rules accumulate as disabled rules (the API has no DELETE endpoint). Periodically clean via Jira UI by filtering on the `tf-acc-test` label.
 
 ## Dev Override
 
-Use `dev.tfrc` to point Terraform at the local binary:
+Generate a portable `dev.tfrc` pointing at the local binary:
 
 ```bash
+make dev.tfrc
 TF_CLI_CONFIG_FILE=dev.tfrc terraform plan
 ```
 
