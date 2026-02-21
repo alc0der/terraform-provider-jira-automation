@@ -2,56 +2,31 @@
 
 A Terraform provider for managing Jira Automation rules via the Automation Rule Management REST API.
 
-## Why this provider?
+## Core Capabilities
 
-**Use any coding agent, not just Rovo.** Jira Automation rules are defined as HCL — plain text that any AI coding assistant (Claude Code, Cursor, Copilot, etc.) can read, write, and refactor. You're not locked into Atlassian's own AI tooling to manage your automations programmatically.
+**B.Y.O.A. (Bring Your Own Agent)**
+: Automation rules are plain text that any AI coding assistant (Claude Code, Cursor, Copilot, etc.) can read, write, and refactor. No lock-in to Atlassian's own AI tooling.
 
-**Structured blocks for common patterns.** High-level `trigger` types like `status_transition` let you express common automation triggers in a few lines of HCL instead of hand-crafting nested JSON. The provider fills in the boilerplate (cloud IDs, scope ARIs, envelope fields) automatically.
+**Structured `component` blocks on top of raw JSON**
+: High-level action types (see [component type table](#component-types)) replace verbose webhook JSON with a few HCL arguments. The provider generates the full API payload — cloud IDs, scope ARIs, encoding — automatically.
 
-**Raw JSON fallback for everything else.** When a trigger or component type isn't covered by a structured block yet, `trigger_json` and `components_json` accept any valid JSON — so you're never blocked. Use `jsonencode()` and go.
+**Raw JSON fallback**
+: `trigger_json` and `components_json` accept any valid JSON for uncovered types — you're never blocked.
 
-**Easy debugging.** `terraform plan` diffs your rule components against the live API state, making it straightforward to see exactly what changed and why a rule isn't firing. Semantic JSON comparison means you only see meaningful diffs, not whitespace noise.
+**Easy debugging**
+: `terraform plan` diffs rule components against live API state with semantic JSON comparison — only meaningful diffs, no whitespace noise.
 
-**Agent skills bridge the documentation gap.** The Jira Automation REST API is largely undocumented. This provider ships with agent skill files (`.claude/skills/`) that capture the tacit knowledge — envelope requirements, read-modify-write patterns, component ID handling — so coding agents can work with the API without you having to reverse-engineer it yourself.
+**Agent skills bridge the documentation gap**
+: Ships with agent skill files (`.claude/skills/`) that capture tacit API knowledge — envelope requirements, read-modify-write patterns, component ID handling — so coding agents work without reverse-engineering.
 
 ## Prerequisites
 
-- [Go](https://go.dev/dl/) 1.23+
 - [Terraform](https://developer.hashicorp.com/terraform/install) 1.5+ (required for `import` blocks and config generation)
 - A Jira Cloud site with an [API token](https://id.atlassian.com/manage-profile/security/api-tokens)
 
-## Setup (step by step)
+## Setup
 
-### 1. Build the provider
-
-```bash
-cd terraform-provider-jira-automation
-go build -o terraform-provider-jira-automation .
-```
-
-This produces a `terraform-provider-jira-automation` binary in the current
-directory. **You must rebuild after every code change.** If Terraform says it
-can't find the provider executable, this is the step you missed.
-
-### 2. Tell Terraform to use your local build
-
-Terraform normally downloads providers from a registry. During development, we
-override that with a `dev.tfrc` file (already included in this directory).
-It tells Terraform: "look for the provider binary in this directory instead of
-downloading it."
-
-Run this **from the `terraform-provider-jira-automation/` directory**:
-
-```bash
-export TF_CLI_CONFIG_FILE="$(pwd)/dev.tfrc"
-```
-
-This must be set in the same terminal session where you run `terraform`.
-The value persists until you close the terminal.
-
-> You can add this line to your `~/.zshrc` to make it permanent.
-
-### 3. Set environment variables
+### 1. Set environment variables
 
 The provider needs three values. You can pass them via environment variables
 so they don't need to be hardcoded in `.tf` files.
@@ -59,20 +34,16 @@ so they don't need to be hardcoded in `.tf` files.
 Create a `.env` file in the directory where your `.tf` files live (e.g. `beno/.env`):
 
 ```bash
-ATLASSIAN_SITE_URL=https://yoursite.atlassian.net
-ATLASSIAN_USER=you@example.com
-ATLASSIAN_TOKEN=your-api-token
+export ATLASSIAN_SITE_URL=https://yoursite.atlassian.net
+export ATLASSIAN_USER=you@example.com
+export ATLASSIAN_TOKEN=your-api-token
 ```
 
 Then **before running any `terraform` command**, load them into your shell:
 
 ```bash
 source .env
-export ATLASSIAN_SITE_URL ATLASSIAN_USER ATLASSIAN_TOKEN
 ```
-
-> `source .env` reads the file but only sets shell variables. The `export` line
-> is what makes them visible to programs like `terraform`. You need both.
 
 The full list of supported env vars:
 
@@ -82,7 +53,7 @@ The full list of supported env vars:
 | Email | `JIRA_EMAIL`, `ATLASSIAN_USER` |
 | API Token | `JIRA_API_TOKEN`, `ATLASSIAN_TOKEN` |
 
-### 4. Write your Terraform config
+### 2. Write your Terraform config
 
 Create a directory for your project (e.g. `my-jira/`) and add a file called `main.tf`:
 
@@ -121,11 +92,11 @@ provider "jira-automation" {
 
 Or mix and match — any attribute set in the block takes priority over env vars.
 
-### 5. Run Terraform
+### 3. Run Terraform
 
 ```bash
 cd beno                  # wherever your .tf files are
-source .env && export ATLASSIAN_SITE_URL ATLASSIAN_USER ATLASSIAN_TOKEN
+source .env
 terraform plan           # preview what Terraform will do
 terraform apply          # execute it
 ```
@@ -189,6 +160,14 @@ resource "jira-automation_rule" "example" {
 | `components_json` | string (JSON) | required | Actions/conditions array — use `jsonencode()` |
 
 `trigger_json` and `components_json` use semantic JSON comparison, so whitespace and key ordering differences won't show as drift.
+
+#### Component types
+
+Structured `component` block types that replace raw JSON with simple HCL arguments:
+
+| Type | Wraps API type | Description |
+|------|---------------|-------------|
+| `add_release_related_work` | `jira.issue.outgoing.webhook` | Add a related item to a release via webhook |
 
 #### Importing an Existing Rule
 
@@ -270,24 +249,80 @@ Each entry in `rules` has: `uuid`, `name`, `state`, `enabled`.
 
 ## Development
 
+### Building from source
+
+Requires [Go](https://go.dev/dl/) 1.23+.
+
 ```bash
-# Build
-make build
+cd terraform-provider-jira-automation
+make build          # compile the binary
+make install        # install to ~/.terraform.d/plugins/
+make dev.tfrc       # generate a portable dev override config
+```
 
-# Install to ~/.terraform.d/plugins (for use without dev override)
-make install
+To use the local build instead of a registry download:
 
-# Run acceptance tests
+```bash
+export TF_CLI_CONFIG_FILE="$(pwd)/dev.tfrc"
+terraform plan      # uses the local binary, no init needed
+```
+
+### Running tests
+
+**Unit tests** (no credentials needed):
+
+```bash
+make test
+```
+
+**Acceptance tests** (requires a live Jira instance):
+
+```bash
 make testacc
 ```
 
+Run a single acceptance test:
+
+```bash
+TF_ACC=1 go test ./internal/provider/ -v -run TestAccRuleResource_basic -timeout 10m
+```
+
+#### Test environment variables
+
+| Variable | Required by |
+|----------|-------------|
+| `TF_ACC=1` | All acceptance tests (framework gate) |
+| `JIRA_SITE_URL` (or `ATLASSIAN_SITE_URL`) | All acceptance tests |
+| `JIRA_EMAIL` (or `ATLASSIAN_USER`) | All acceptance tests |
+| `JIRA_API_TOKEN` (or `ATLASSIAN_TOKEN`) | All acceptance tests |
+| `JIRA_TEST_PROJECT_ID` | Tests with project-scoped triggers |
+| `JIRA_WEBHOOK_USER` | `add_release_related_work` tests |
+| `JIRA_WEBHOOK_TOKEN` | `add_release_related_work` tests |
+
+The test Jira project needs a workflow with "To Do" and "In Progress" statuses (standard defaults).
+
+#### Test conventions
+
+- Unit tests: `Test*` (e.g. `TestBuildLog`, `TestResolveAliases`)
+- Acceptance tests: `TestAcc*` (e.g. `TestAccRuleResource_basic`)
+- All acceptance test rules are prefixed `tf-acc-` and labeled `tf-acc-test`
+- Tests run serially (no `t.Parallel()`) to avoid API rate limits
+
+#### CI
+
+CI runs unit tests on all pushes and PRs. Acceptance tests run on pushes to `main` and via manual workflow dispatch (requires `jira-test` environment secrets).
+
+#### Cleanup
+
+Acceptance test rules accumulate as disabled rules (the API has no DELETE endpoint). Periodically clean via Jira UI by filtering on the `tf-acc-test` label.
+
 ## Troubleshooting
 
-**"could not find executable file starting with terraform-provider-jira-automation"** — The binary hasn't been built. Run `go build -o terraform-provider-jira-automation .` from the `terraform-provider-jira-automation/` directory (step 1).
+**"could not find executable file starting with terraform-provider-jira-automation"** — The binary hasn't been built. Run `make build` from the `terraform-provider-jira-automation/` directory.
 
 **"requires explicit configuration"** — You need a `provider "jira-automation" {}` block in your `.tf` file. Terraform always requires this, even when all values come from env vars.
 
-**"Missing site_url"** — The env var isn't reaching Terraform. Make sure you ran both `source .env` *and* `export ATLASSIAN_SITE_URL` (or `export JIRA_SITE_URL`). Just `source .env` alone is not enough — you must also `export` the variables.
+**"Missing site_url"** — The env var isn't reaching Terraform. Make sure you ran `source .env` and that your `.env` file has `export` prefixes on each variable.
 
 **"empty cloudId from tenant info"** — Make sure `site_url` is your full Jira Cloud URL (e.g. `https://yoursite.atlassian.net`), not an API URL.
 
