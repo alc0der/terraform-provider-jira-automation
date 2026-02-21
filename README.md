@@ -7,8 +7,8 @@ A Terraform provider for managing Jira Automation rules via the Automation Rule 
 **B.Y.O.A. (Bring Your Own Agent)**
 : Automation rules are plain text that any AI coding assistant (Claude Code, Cursor, Copilot, etc.) can read, write, and refactor. No lock-in to Atlassian's own AI tooling.
 
-**Structured `component` blocks on top of raw JSON**
-: High-level action types (see [component type table](#component-types)) replace verbose webhook JSON with a few HCL arguments. The provider generates the full API payload — cloud IDs, scope ARIs, encoding — automatically.
+**Prebuilt components**
+: Common webhook patterns (see [component types](#component-types)) are packaged as reusable components — no need to hand-craft API payloads yourself.
 
 **Raw JSON fallback**
 : `trigger_json` and `components_json` accept any valid JSON for uncovered types — you're never blocked.
@@ -16,7 +16,7 @@ A Terraform provider for managing Jira Automation rules via the Automation Rule 
 **Easy debugging**
 : `terraform plan` diffs rule components against live API state with semantic JSON comparison — only meaningful diffs, no whitespace noise.
 
-**Agent skills bridge the documentation gap**
+**Built-in agent skills**
 : Ships with agent skill files (`.claude/skills/`) that capture tacit API knowledge — envelope requirements, read-modify-write patterns, component ID handling — so coding agents work without reverse-engineering.
 
 ## Prerequisites
