@@ -1,0 +1,125 @@
+{
+  "actor": {
+    "actor": "5e315033461f120e6dac5c6f",
+    "type": "ACCOUNT_ID"
+  },
+  "canOtherRuleTrigger": false,
+  "collaborators": [],
+  "components": [
+    {
+      "children": [],
+      "component": "ACTION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "c8404e9d-b4db-4c9b-9da9-9515246d6333",
+      "parentId": null,
+      "schemaVersion": 1,
+      "type": "codebarrel.action.log",
+      "value": "[DEBUG add_release_related_work] webhook_url = https://api.atlassian.com/ex/jira/4e119cf2-4b83-4195-abdf-d7a2f9bd043d/rest/api/3/version/{{issue.customfield_10020.format(\"###\")}}/relatedwork"
+    },
+    {
+      "children": [],
+      "component": "ACTION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "ce94a27d-78e3-4f9b-b364-275f01656481",
+      "parentId": null,
+      "schemaVersion": 1,
+      "type": "codebarrel.action.log",
+      "value": "[DEBUG add_release_related_work] request_body = {\"category\":\"deployment\",\"title\":\"Deploy {{issue.key}}\",\"url\":\"https://ci.example.com/deploy/{{issue.key}}\"}"
+    },
+    {
+      "children": [],
+      "component": "ACTION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "6c919eb5-69f2-4dd4-90ee-f1c0531f5553",
+      "parentId": null,
+      "schemaVersion": 1,
+      "type": "codebarrel.action.log",
+      "value": "[DEBUG add_release_related_work] version_field_value = {{issue.customfield_10020}}"
+    },
+    {
+      "children": [],
+      "component": "ACTION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "8dc3f9d1-11e1-4980-97a9-9359e257bddd",
+      "parentId": null,
+      "schemaVersion": 1,
+      "type": "codebarrel.action.log",
+      "value": "[DEBUG add_release_related_work] version_id = {{issue.customfield_10020.format(\"###\")}}"
+    },
+    {
+      "children": [],
+      "component": "ACTION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "39af50da-9512-4d79-9c48-3edd9f1f6509",
+      "parentId": null,
+      "schemaVersion": 1,
+      "type": "jira.issue.outgoing.webhook",
+      "value": {
+        "contentType": "custom",
+        "continueOnErrorEnabled": false,
+        "customBody": "{\"category\":\"deployment\",\"title\":\"Deploy {{issue.key}}\",\"url\":\"https://ci.example.com/deploy/{{issue.key}}\"}",
+        "headers": [
+          {
+            "headerSecure": true,
+            "id": null,
+            "name": "Authorization",
+            "value": "Basic amlyYS1hdXRvbWF0aW9uLWZvci10ZXN0ZXJzLXc5aTJsamh4eTFAc2VydmljZWFjY291bnQuYXRsYXNzaWFuLmNvbTpBVFNUVDN4RmZHRjBtMFNfTzlkOHAwdkpUSVFHQ0RsUm1VSDN4cFJCNGZ4cWtyRVU4SC1TYlAyakFLVE9SaVNrTDA1eXF5cVltU2RnMUY2U2plcHo4SWFnbE40QndVTk40MU43Uk5KSU1ReGJVZXI5Tnl4SlpYWDgxTm9MWUpyeU04N1dNQVFJdG1leTZyaXNfMXFXUE5xMmN1ZE1qTFQwWTVZV2tCM3BQclEyTWE0QWp5NG96eXc9RDlCNzhDODA="
+          }
+        ],
+        "method": "POST",
+        "responseEnabled": false,
+        "sendIssue": false,
+        "url": "https://api.atlassian.com/ex/jira/4e119cf2-4b83-4195-abdf-d7a2f9bd043d/rest/api/3/version/{{issue.customfield_10020.format(\"###\")}}/relatedwork"
+      }
+    }
+  ],
+  "description": null,
+  "labels": [
+    "managed-by:terraform"
+  ],
+  "name": "tf-acc-doc-debug-webhook",
+  "notifyOnError": "FIRSTERROR",
+  "ruleScopeARIs": [
+    "ari:cloud:jira:4e119cf2-4b83-4195-abdf-d7a2f9bd043d:project/10336"
+  ],
+  "state": "ENABLED",
+  "trigger": {
+    "component": "TRIGGER",
+    "conditions": [],
+    "connectionId": null,
+    "id": "191fcc66-0a72-4eab-b023-7eb273d0813c",
+    "schemaVersion": 1,
+    "type": "jira.issue.event.trigger:transitioned",
+    "value": {
+      "eventFilters": [
+        "ari:cloud:jira:4e119cf2-4b83-4195-abdf-d7a2f9bd043d:project/10336"
+      ],
+      "eventKey": "jira:issue_updated",
+      "fromStatus": [
+        {
+          "type": "NAME",
+          "value": "In Progress"
+        }
+      ],
+      "issueEvent": "issue_generic",
+      "toStatus": [
+        {
+          "type": "NAME",
+          "value": "Done"
+        }
+      ]
+    }
+  },
+  "uuid": "019c88d8-fe5e-709f-925c-e5fe15f06c39",
+  "writeAccessType": "OWNER_ONLY"
+}

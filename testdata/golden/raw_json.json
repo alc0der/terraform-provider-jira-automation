@@ -1,0 +1,61 @@
+{
+  "actor": {
+    "actor": "5e315033461f120e6dac5c6f",
+    "type": "ACCOUNT_ID"
+  },
+  "canOtherRuleTrigger": false,
+  "collaborators": [],
+  "components": [
+    {
+      "children": [],
+      "component": "ACTION",
+      "conditionParentId": null,
+      "conditions": [],
+      "connectionId": null,
+      "id": "5324b643-67e8-49d7-ada6-36e95b05a098",
+      "parentId": null,
+      "schemaVersion": 1,
+      "type": "codebarrel.action.log",
+      "value": "Hello from Terraform"
+    }
+  ],
+  "description": null,
+  "labels": [
+    "managed-by:terraform"
+  ],
+  "name": "tf-acc-doc-raw-json",
+  "notifyOnError": "FIRSTERROR",
+  "ruleScopeARIs": [
+    "ari:cloud:jira:4e119cf2-4b83-4195-abdf-d7a2f9bd043d:project/10336"
+  ],
+  "state": "ENABLED",
+  "trigger": {
+    "component": "TRIGGER",
+    "conditions": [],
+    "connectionId": null,
+    "id": "9bf9b211-bd54-46b9-86ea-f92b8ae25013",
+    "schemaVersion": 1,
+    "type": "jira.issue.event.trigger:transitioned",
+    "value": {
+      "eventFilters": [
+        "ari:cloud:jira:4e119cf2-4b83-4195-abdf-d7a2f9bd043d:project/10336"
+      ],
+      "eventKey": "jira:issue_updated",
+      "fromStatus": [
+        {
+          "type": "NAME",
+          "value": "To Do"
+        }
+      ],
+      "issueEvent": "issue_generic",
+      "toStatus": [
+        {
+          "type": "NAME",
+          "value": "In Progress"
+        }
+      ]
+    }
+  },
+  "uuid": "019c88d9-8e4b-7b4c-b6b7-d29a5e222055",
+  "writeAccessType": "OWNER_ONLY"
+}
