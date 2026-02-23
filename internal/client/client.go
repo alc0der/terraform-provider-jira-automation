@@ -14,6 +14,7 @@ type Client struct {
 	BaseURL        string
 	SiteURL        string
 	CloudID        string
+	AccountID      string // Current user's Jira account ID, resolved at init.
 	Email          string
 	APIToken       string
 	WebhookUser    string
@@ -58,8 +59,8 @@ type Rule struct {
 	Components    []json.RawMessage `json:"components"`
 }
 
-// getRuleRaw returns the raw JSON for a rule (without the envelope).
-func (c *Client) getRuleRaw(uuid string) (json.RawMessage, error) {
+// GetRuleRaw returns the raw JSON for a rule (without the envelope).
+func (c *Client) GetRuleRaw(uuid string) (json.RawMessage, error) {
 	url := c.BaseURL + "/rule/" + uuid
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
@@ -87,14 +88,17 @@ func (c *Client) getRuleRaw(uuid string) (json.RawMessage, error) {
 
 // CreateRuleRequest is the payload for POST /rule.
 type CreateRuleRequest struct {
-	Name       string            `json:"name"`
-	Trigger    json.RawMessage   `json:"trigger"`
-	Components []json.RawMessage `json:"components"`
+	Name       string
+	ProjectID  string // Optional; used to build project-scoped ARIs.
+	Trigger    json.RawMessage
+	Components []json.RawMessage
 }
 
 // CreateRuleResponse is the response from POST /rule.
 type CreateRuleResponse struct {
 	UUID string `json:"uuid"`
+	// The API may also return "ruleUuid" depending on the endpoint.
+	RuleUUID string `json:"ruleUuid"`
 }
 
 // UpdateRuleRequest is the payload for PUT /rule/{uuid}.
@@ -142,6 +146,35 @@ func New(siteURL, email, apiToken, webhookUser, webhookToken string, aliases map
 
 	baseURL := fmt.Sprintf("https://api.atlassian.com/automation/public/jira/%s/rest/v1", tenant.CloudID)
 
+	// Resolve the current user's account ID for rule authorship fields.
+	myselfURL := siteURL + "/rest/api/3/myself"
+	myselfReq, err := http.NewRequest(http.MethodGet, myselfURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("building myself request: %w", err)
+	}
+	myselfReq.SetBasicAuth(email, apiToken)
+	myselfReq.Header.Set("Accept", "application/json")
+	myselfResp, err := httpClient.Do(myselfReq)
+	if err != nil {
+		return nil, fmt.Errorf("fetching current user: %w", err)
+	}
+	defer myselfResp.Body.Close()
+
+	if myselfResp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(myselfResp.Body)
+		return nil, fmt.Errorf("myself returned %d: %s", myselfResp.StatusCode, string(body))
+	}
+
+	var myself struct {
+		AccountID string `json:"accountId"`
+	}
+	if err := json.NewDecoder(myselfResp.Body).Decode(&myself); err != nil {
+		return nil, fmt.Errorf("decoding myself response: %w", err)
+	}
+	if myself.AccountID == "" {
+		return nil, fmt.Errorf("empty accountId from /rest/api/3/myself")
+	}
+
 	if aliases == nil {
 		aliases = map[string]string{}
 	}
@@ -154,6 +187,7 @@ func New(siteURL, email, apiToken, webhookUser, webhookToken string, aliases map
 		BaseURL:        baseURL,
 		SiteURL:        siteURL,
 		CloudID:        tenant.CloudID,
+		AccountID:      myself.AccountID,
 		Email:          email,
 		APIToken:       apiToken,
 		WebhookUser:    webhookUser,
@@ -211,7 +245,7 @@ func (c *Client) ListRules() ([]RuleSummary, error) {
 
 // GetRule returns the full rule config for a given UUID.
 func (c *Client) GetRule(uuid string) (*Rule, error) {
-	raw, err := c.getRuleRaw(uuid)
+	raw, err := c.GetRuleRaw(uuid)
 	if err != nil {
 		return nil, err
 	}
@@ -225,11 +259,52 @@ func (c *Client) GetRule(uuid string) (*Rule, error) {
 }
 
 // CreateRule creates a new automation rule and returns the UUID.
+// The API requires several fields beyond name/trigger/components:
+// state, notifyOnError, canOtherRuleTrigger, authorAccountId, actor,
+// writeAccessType, and ruleScopeARIs. These are populated automatically.
 func (c *Client) CreateRule(rule CreateRuleRequest) (string, error) {
-	// The API requires the payload to be wrapped in a {"rule": ...} envelope.
-	envelope := struct {
-		Rule CreateRuleRequest `json:"rule"`
-	}{Rule: rule}
+	// Parse trigger and components into generic types for the payload.
+	var trigger interface{}
+	if err := json.Unmarshal(rule.Trigger, &trigger); err != nil {
+		return "", fmt.Errorf("parsing trigger: %w", err)
+	}
+
+	var components []interface{}
+	for _, comp := range rule.Components {
+		var v interface{}
+		if err := json.Unmarshal(comp, &v); err != nil {
+			return "", fmt.Errorf("parsing component: %w", err)
+		}
+		components = append(components, v)
+	}
+
+	// Build scope ARIs.
+	var scopeARIs []string
+	if rule.ProjectID != "" {
+		scopeARIs = []string{
+			fmt.Sprintf("ari:cloud:jira:%s:project/%s", c.CloudID, rule.ProjectID),
+		}
+	} else {
+		scopeARIs = []string{
+			fmt.Sprintf("ari:cloud:jira::site/%s", c.CloudID),
+		}
+	}
+
+	// Build the full rule payload with all required fields.
+	payload := map[string]interface{}{
+		"name":                rule.Name,
+		"state":               "DISABLED", // Create disabled; enable via SetRuleState after.
+		"notifyOnError":       "FIRSTERROR",
+		"canOtherRuleTrigger": false,
+		"authorAccountId":     c.AccountID,
+		"actor":               map[string]string{"type": "ACCOUNT_ID", "actor": c.AccountID},
+		"writeAccessType":     "OWNER_ONLY",
+		"trigger":             trigger,
+		"components":          components,
+		"ruleScopeARIs":       scopeARIs,
+	}
+
+	envelope := map[string]interface{}{"rule": payload}
 	body, err := json.Marshal(envelope)
 	if err != nil {
 		return "", fmt.Errorf("marshaling create rule request: %w", err)
@@ -256,7 +331,13 @@ func (c *Client) CreateRule(rule CreateRuleRequest) (string, error) {
 		return "", fmt.Errorf("decoding create rule response: %w", err)
 	}
 
-	return result.UUID, nil
+	// The API returns either "uuid" or "ruleUuid" depending on the endpoint.
+	uuid := result.UUID
+	if uuid == "" {
+		uuid = result.RuleUUID
+	}
+
+	return uuid, nil
 }
 
 // UpdateRule updates an existing automation rule.
@@ -265,7 +346,7 @@ func (c *Client) CreateRule(rule CreateRuleRequest) (string, error) {
 // them), and PUTs the complete rule wrapped in the required {"rule": ...} envelope.
 func (c *Client) UpdateRule(uuid string, update UpdateRuleRequest) error {
 	// 1. Fetch current rule as raw JSON to preserve all API-managed fields.
-	raw, err := c.getRuleRaw(uuid)
+	raw, err := c.GetRuleRaw(uuid)
 	if err != nil {
 		return fmt.Errorf("reading current rule for update: %w", err)
 	}
@@ -370,34 +451,6 @@ func (c *Client) ListLabels(projectID string) ([]Label, error) {
 	return labels, nil
 }
 
-// CreateLabel creates a new label in a project via the internal API and returns its ID.
-func (c *Client) CreateLabel(projectID, name string) (int, error) {
-	payload, _ := json.Marshal(map[string]string{"name": name})
-	url := c.internalBaseURL(projectID) + "/rule-labels"
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return 0, fmt.Errorf("building create label request: %w", err)
-	}
-
-	resp, err := c.do(req)
-	if err != nil {
-		return 0, fmt.Errorf("creating label: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		body, _ := io.ReadAll(resp.Body)
-		return 0, fmt.Errorf("create label returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	var label Label
-	if err := json.NewDecoder(resp.Body).Decode(&label); err != nil {
-		return 0, fmt.Errorf("decoding create label response: %w", err)
-	}
-
-	return label.ID, nil
-}
-
 // AddLabelToRule associates a label with a rule via the internal API.
 func (c *Client) AddLabelToRule(projectID, ruleUUID string, labelID int) error {
 	url := fmt.Sprintf("%s/rules/%s/labels/%d", c.internalBaseURL(projectID), ruleUUID, labelID)
@@ -418,33 +471,6 @@ func (c *Client) AddLabelToRule(projectID, ruleUUID string, labelID int) error {
 	}
 
 	return nil
-}
-
-// EnsureLabel ensures a label with the given name exists in the project and is associated
-// with the rule. It looks up the label by name, creates it if missing, then adds it to the rule.
-func (c *Client) EnsureLabel(projectID, ruleUUID, labelName string) error {
-	labels, err := c.ListLabels(projectID)
-	if err != nil {
-		return fmt.Errorf("listing labels for ensure: %w", err)
-	}
-
-	var labelID int
-	for _, l := range labels {
-		if l.Name == labelName {
-			labelID = l.ID
-			break
-		}
-	}
-
-	if labelID == 0 {
-		id, err := c.CreateLabel(projectID, labelName)
-		if err != nil {
-			return fmt.Errorf("creating label %q: %w", labelName, err)
-		}
-		labelID = id
-	}
-
-	return c.AddLabelToRule(projectID, ruleUUID, labelID)
 }
 
 // ExtractProjectID extracts the project ID from a scope ARI string.

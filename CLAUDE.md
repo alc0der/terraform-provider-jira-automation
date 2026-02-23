@@ -75,6 +75,36 @@ go build -o import-gen ./cmd/import-gen && ./import-gen ../beno
 
 Requires `ATLASSIAN_SITE_URL`, `ATLASSIAN_USER`, `ATLASSIAN_TOKEN` env vars.
 
+## Doc Examples & Golden Files
+
+The 4 HCL examples in `docs/resources/rule.md` are generated from `examples/resources/jira-automation_rule/*.tf` via `tfplugindocs`. These same example files are the source of truth for the `TestAccDocExample_*` acceptance tests.
+
+### Regenerate docs from examples
+
+```bash
+make docs
+```
+
+### Run doc-example acceptance tests
+
+```bash
+TF_ACC=1 go test ./internal/provider/ -v -run TestAccDocExample -timeout 30m
+```
+
+### Update golden files (API response snapshots)
+
+```bash
+make golden
+# or equivalently:
+TF_ACC=1 GOLDEN_UPDATE=1 go test ./internal/provider/ -v -run TestAccDocExample -timeout 30m
+```
+
+Golden files live in `testdata/golden/*.json`. Set `GOLDEN_STRICT=1` in CI to fail on drift.
+
+### Screenshot capture
+
+After `make golden`, use Claude Code with Chrome MCP tools to capture Jira UI screenshots. See `testdata/screenshots/README.md`.
+
 ## API Knowledge
 
 Jira Automation REST API tacit knowledge (envelope requirements, read-modify-write pattern, component IDs, debugging) is in `.claude/skills/jira-automation-api/SKILL.md`.

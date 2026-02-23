@@ -158,10 +158,13 @@ func TestAccRuleResource_import(t *testing.T) {
 				),
 			},
 			{
-				ResourceName:            "jira-automation_rule.test",
-				ImportState:             true,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"project_id"},
+				ResourceName:      "jira-automation_rule.test",
+				ImportState:       true,
+				ImportStateVerify: true,
+				// Import always produces trigger_json/components_json (raw JSON),
+				// not the structured trigger/components attributes, since the API
+				// doesn't know the user's preferred format.
+				ImportStateVerifyIgnore: []string{"project_id", "trigger", "trigger_json", "components", "components_json"},
 			},
 		},
 	})
@@ -213,22 +216,6 @@ func TestAccRuleResource_conditionThenElse(t *testing.T) {
 				Config: testAccRuleResourceConfig_condition("tf-acc-condition"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("jira-automation_rule.test", "components.0.type", "condition"),
-				),
-			},
-		},
-	})
-}
-
-func TestAccRuleResource_labels(t *testing.T) {
-	resource.Test(t, resource.TestCase{
-		PreCheck:                 func() { testAccPreCheckWithProjectID(t) },
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		CheckDestroy:             testAccCheckRuleResourceDestroy,
-		Steps: []resource.TestStep{
-			{
-				Config: testAccRuleResourceConfig_labels("tf-acc-labels"),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("jira-automation_rule.test", "name", "tf-acc-labels"),
 				),
 			},
 		},
@@ -294,7 +281,7 @@ resource "jira-automation_rule" "test" {
   name       = %[1]q
   project_id = %[2]q
 
-  trigger {
+  trigger = {
     type = "status_transition"
     args = {
       from_status = "To Do"
@@ -302,12 +289,12 @@ resource "jira-automation_rule" "test" {
     }
   }
 
-  components {
+  components = [{
     type = "log"
     args = {
       message = "tf-acc-test: %[1]s"
     }
-  }
+  }]
 }
 `, name, os.Getenv("JIRA_TEST_PROJECT_ID"))
 }
@@ -318,7 +305,7 @@ resource "jira-automation_rule" "test" {
   name       = %[1]q
   project_id = %[2]q
 
-  trigger {
+  trigger = {
     type = "status_transition"
     args = {
       from_status = "To Do"
@@ -326,12 +313,12 @@ resource "jira-automation_rule" "test" {
     }
   }
 
-  components {
+  components = [{
     type = "comment"
     args = {
       message = "tf-acc-test: %[1]s"
     }
-  }
+  }]
 }
 `, name, os.Getenv("JIRA_TEST_PROJECT_ID"))
 }
@@ -343,7 +330,7 @@ resource "jira-automation_rule" "test" {
   enabled    = %[2]t
   project_id = %[3]q
 
-  trigger {
+  trigger = {
     type = "status_transition"
     args = {
       from_status = "To Do"
@@ -351,12 +338,12 @@ resource "jira-automation_rule" "test" {
     }
   }
 
-  components {
+  components = [{
     type = "log"
     args = {
       message = "tf-acc-test: %[1]s"
     }
-  }
+  }]
 }
 `, name, enabled, os.Getenv("JIRA_TEST_PROJECT_ID"))
 }
@@ -368,26 +355,21 @@ resource "jira-automation_rule" "test" {
   project_id = %[2]q
 
   trigger_json = jsonencode({
-    component      = "TRIGGER"
-    conditions     = []
-    connectionId   = null
-    schemaVersion  = 1
-    type           = "jira.issue.event.trigger:transitioned"
+    component     = "TRIGGER"
+    schemaVersion = 1
+    type          = "jira.issue.event.trigger:transitioned"
     value = {
-      eventFilters = ["ari:cloud:jira:placeholder:project/%[2]s"]
-      eventKey     = "jira:issue_updated"
-      issueEvent   = "issue_generic"
-      fromStatus   = [{ type = "NAME", value = "To Do" }]
-      toStatus     = [{ type = "NAME", value = "In Progress" }]
+      fromStatus = [{ type = "NAME", value = "To Do" }]
+      toStatus   = [{ type = "NAME", value = "In Progress" }]
     }
   })
 
-  components {
+  components = [{
     type = "log"
     args = {
       message = "tf-acc-test: %[1]s"
     }
-  }
+  }]
 }
 `, name, os.Getenv("JIRA_TEST_PROJECT_ID"))
 }
@@ -398,7 +380,7 @@ resource "jira-automation_rule" "test" {
   name       = %[1]q
   project_id = %[2]q
 
-  trigger {
+  trigger = {
     type = "status_transition"
     args = {
       from_status = "To Do"
@@ -408,10 +390,7 @@ resource "jira-automation_rule" "test" {
 
   components_json = jsonencode([
     {
-      children      = []
       component     = "ACTION"
-      conditions    = []
-      connectionId  = null
       schemaVersion = 1
       type          = "codebarrel.action.log"
       value         = "tf-acc-test: %[1]s via components_json"
@@ -427,7 +406,7 @@ resource "jira-automation_rule" "test" {
   name       = %[1]q
   project_id = %[2]q
 
-  trigger {
+  trigger = {
     type = "status_transition"
     args = {
       from_status = "To Do"
@@ -435,7 +414,7 @@ resource "jira-automation_rule" "test" {
     }
   }
 
-  components {
+  components = [{
     type = "condition"
     args = {
       first    = "{{issue.status.name}}"
@@ -443,45 +422,20 @@ resource "jira-automation_rule" "test" {
       second   = "In Progress"
     }
 
-    then {
+    then = [{
       type = "log"
       args = {
         message = "tf-acc-test: condition was true"
       }
-    }
+    }]
 
-    else {
+    else = [{
       type = "log"
       args = {
         message = "tf-acc-test: condition was false"
       }
-    }
-  }
-}
-`, name, os.Getenv("JIRA_TEST_PROJECT_ID"))
-}
-
-func testAccRuleResourceConfig_labels(name string) string {
-	return fmt.Sprintf(`
-resource "jira-automation_rule" "test" {
-  name       = %[1]q
-  project_id = %[2]q
-  labels     = ["tf-acc-test"]
-
-  trigger {
-    type = "status_transition"
-    args = {
-      from_status = "To Do"
-      to_status   = "In Progress"
-    }
-  }
-
-  components {
-    type = "log"
-    args = {
-      message = "tf-acc-test: %[1]s"
-    }
-  }
+    }]
+  }]
 }
 `, name, os.Getenv("JIRA_TEST_PROJECT_ID"))
 }
@@ -498,7 +452,7 @@ resource "jira-automation_rule" "test" {
   name       = %[1]q
   project_id = %[2]q
 
-  trigger {
+  trigger = {
     type = "status_transition"
     args = {
       from_status = "To Do"
@@ -506,12 +460,12 @@ resource "jira-automation_rule" "test" {
     }
   }
 
-  components {
+  components = [{
     type = "log"
     args = {
       message = "tf-acc-test: alias={{issue.my_status}}"
     }
-  }
+  }]
 }
 `, name, os.Getenv("JIRA_TEST_PROJECT_ID"))
 }
@@ -526,7 +480,7 @@ resource "jira-automation_rule" "test" {
   name       = %[1]q
   project_id = %[2]q
 
-  trigger {
+  trigger = {
     type = "status_transition"
     args = {
       from_status = "To Do"
@@ -534,7 +488,7 @@ resource "jira-automation_rule" "test" {
     }
   }
 
-  components {
+  components = [{
     type = "add_release_related_work"
     args = {
       version_field = "customfield_10020"
@@ -543,7 +497,7 @@ resource "jira-automation_rule" "test" {
       url           = "https://example.com/tf-acc-test"
 %[3]s
     }
-  }
+  }]
 }
 `, name, os.Getenv("JIRA_TEST_PROJECT_ID"), debugArg)
 }

@@ -388,6 +388,7 @@ func BuildConditionJSON(condArgs map[string]string, thenActions, elseActions []j
 	}
 
 	// The comparator condition inside the IF block.
+	// The API expects uppercase operator values (EQUALS, NOT_EQUALS, etc.).
 	comparator := map[string]interface{}{
 		"children":      []interface{}{},
 		"component":     "CONDITION",
@@ -397,7 +398,7 @@ func BuildConditionJSON(condArgs map[string]string, thenActions, elseActions []j
 		"type":          "jira.comparator.condition",
 		"value": map[string]interface{}{
 			"first":    first,
-			"operator": operator,
+			"operator": strings.ToUpper(operator),
 			"second":   second,
 		},
 	}
@@ -505,7 +506,7 @@ func parseConditionContainer(raw json.RawMessage, ctx context.Context, reverse m
 
 	condArgs := map[string]string{
 		"first":    comparator.Value.First,
-		"operator": comparator.Value.Operator,
+		"operator": strings.ToLower(comparator.Value.Operator),
 		"second":   comparator.Value.Second,
 	}
 	condArgs = unresolveAliases(condArgs, reverse)

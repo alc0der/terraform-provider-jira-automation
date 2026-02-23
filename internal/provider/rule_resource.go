@@ -78,7 +78,7 @@ func (r *ruleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				Computed:    true,
 				Description: "Rule state (ENABLED or DISABLED).",
 				PlanModifiers: []planmodifier.String{
-					stringplanmodifier.UseStateForUnknown(),
+					stateFromEnabledModifier{},
 				},
 			},
 			"scope": schema.ListAttribute{
@@ -90,12 +90,11 @@ func (r *ruleResource) Schema(_ context.Context, _ resource.SchemaRequest, resp 
 				},
 			},
 			"labels": schema.ListAttribute{
-				Optional:    true,
 				Computed:    true,
 				ElementType: types.StringType,
-				Description: "Rule labels. The provider auto-adds managed-by:terraform. Labels are add-only (never removed).",
+				Description: "Rule labels (read-only). The provider auto-tags rules with managed-by:terraform but labels cannot be set via config. Use the Jira UI to manage labels.",
 				PlanModifiers: []planmodifier.List{
-					labelsAddOnlyModifier{},
+					listplanmodifier.UseStateForUnknown(),
 				},
 			},
 			"project_id": schema.StringAttribute{
@@ -222,6 +221,7 @@ func (r *ruleResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	createReq := client.CreateRuleRequest{
 		Name:       plan.Name.ValueString(),
+		ProjectID:  plan.ProjectID.ValueString(),
 		Trigger:    trigger,
 		Components: components,
 	}
@@ -239,20 +239,17 @@ func (r *ruleResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	// Read back the created rule to populate all computed fields.
+	// Read back the created rule to populate computed fields (scope, state, etc.).
 	diags = r.readIntoModel(ctx, uuid, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	// Sync labels via internal API.
-	r.syncLabels(ctx, uuid, plan, &resp.Diagnostics)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	// Tag with managed-by:terraform.
+	r.syncManagedLabel(ctx, uuid, plan, &resp.Diagnostics)
 
-	// Re-read after label sync to pick up the new labels.
+	// Re-read to pick up the label.
 	diags = r.readIntoModel(ctx, uuid, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -330,13 +327,10 @@ func (r *ruleResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	// Sync labels via internal API.
-	r.syncLabels(ctx, uuid, plan, &resp.Diagnostics)
-	if resp.Diagnostics.HasError() {
-		return
-	}
+	// Tag with managed-by:terraform.
+	r.syncManagedLabel(ctx, uuid, plan, &resp.Diagnostics)
 
-	// Re-read after label sync to pick up the new labels.
+	// Re-read to pick up the label.
 	diags = r.readIntoModel(ctx, uuid, &plan)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
@@ -402,7 +396,7 @@ func (r *ruleResource) readIntoModel(ctx context.Context, uuid string, model *ru
 		model.Scope = types.ListNull(types.StringType)
 	}
 
-	// Labels
+	// Labels — read-only, show whatever the API returns.
 	if len(rule.Labels) > 0 {
 		labelList, d := types.ListValueFrom(ctx, types.StringType, rule.Labels)
 		diags.Append(d...)
@@ -548,7 +542,7 @@ func normalizeRawJSONArray(raws []json.RawMessage) (string, error) {
 	return string(out), nil
 }
 
-// stripAPIFields recursively removes API-assigned fields from component JSON
+// stripAPIFields recursively removes API-assigned/enriched fields from JSON
 // so the normalized output matches the Terraform config (which doesn't include them).
 func stripAPIFields(v interface{}) {
 	m, ok := v.(map[string]interface{})
@@ -556,19 +550,38 @@ func stripAPIFields(v interface{}) {
 		return
 	}
 
+	// Remove structural IDs and computed fields.
 	delete(m, "id")
 	delete(m, "parentId")
 	delete(m, "conditionParentId")
+	delete(m, "connectionId")
 
+	// Remove empty containers the API always adds.
 	if children, ok := m["children"].([]interface{}); ok {
-		for _, child := range children {
-			stripAPIFields(child)
+		if len(children) == 0 {
+			delete(m, "children")
+		} else {
+			for _, child := range children {
+				stripAPIFields(child)
+			}
 		}
 	}
 	if conditions, ok := m["conditions"].([]interface{}); ok {
-		for _, cond := range conditions {
-			stripAPIFields(cond)
+		if len(conditions) == 0 {
+			delete(m, "conditions")
+		} else {
+			for _, cond := range conditions {
+				stripAPIFields(cond)
+			}
 		}
+	}
+
+	// Remove API-enriched fields from trigger/component values.
+	// The API adds eventFilters, eventKey, issueEvent to trigger values.
+	if val, ok := m["value"].(map[string]interface{}); ok {
+		delete(val, "eventFilters")
+		delete(val, "eventKey")
+		delete(val, "issueEvent")
 	}
 }
 
@@ -581,95 +594,79 @@ func toStringSlice(ctx context.Context, list types.List) []string {
 	return strs
 }
 
-// syncLabels ensures all desired labels (config labels + managed-by:terraform) are present
-// on the rule via the internal API. Skips if the rule has no single-project scope.
-func (r *ruleResource) syncLabels(ctx context.Context, uuid string, model ruleResourceModel, diags *diag.Diagnostics) {
-	// Extract single project ID from scope.
+// syncManagedLabel tags the rule with managed-by:terraform via the internal API.
+// Warns instead of failing if the label doesn't exist — the user must create it in the Jira UI.
+func (r *ruleResource) syncManagedLabel(ctx context.Context, uuid string, model ruleResourceModel, diags *diag.Diagnostics) {
 	scopes := toStringSlice(ctx, model.Scope)
 	if len(scopes) != 1 {
-		return // Global or multi-project rule — skip label management.
+		return // Global or multi-project — skip.
 	}
-
 	projectID := client.ExtractProjectID(scopes[0])
 	if projectID == "" {
 		return
 	}
 
-	// Build desired label set: config labels + managed-by:terraform.
-	desired := map[string]bool{"managed-by:terraform": true}
-	for _, l := range toStringSlice(ctx, model.Labels) {
-		desired[l] = true
+	// Look up the managed-by:terraform label. If it doesn't exist, warn the user.
+	labels, err := r.client.ListLabels(projectID)
+	if err != nil {
+		diags.AddWarning("Could not list labels",
+			fmt.Sprintf("Could not list labels for project %s: %s. Create a 'managed-by:terraform' label in the Jira UI to tag managed rules.", projectID, err))
+		return
 	}
 
-	// Check which labels already exist on the rule (from the read-back).
-	existing := map[string]bool{}
-	for _, l := range toStringSlice(ctx, model.Labels) {
-		existing[l] = true
+	var labelID int
+	for _, l := range labels {
+		if l.Name == "managed-by:terraform" {
+			labelID = l.ID
+			break
+		}
 	}
 
-	for label := range desired {
-		if existing[label] {
-			continue
-		}
-		if err := r.client.EnsureLabel(projectID, uuid, label); err != nil {
-			diags.AddWarning("Error adding label",
-				fmt.Sprintf("Could not add label %q to rule %s: %s", label, uuid, err.Error()))
-		}
+	if labelID == 0 {
+		diags.AddWarning("Label 'managed-by:terraform' not found",
+			"Create a label named 'managed-by:terraform' in the Jira Automation UI to tag Terraform-managed rules. "+
+				"Go to Project Settings → Automation → Labels to create it.")
+		return
+	}
+
+	if err := r.client.AddLabelToRule(projectID, uuid, labelID); err != nil {
+		diags.AddWarning("Could not tag rule with managed-by:terraform",
+			fmt.Sprintf("Failed to add managed-by:terraform label to rule %s: %s", uuid, err))
 	}
 }
 
-// --- Labels plan modifier (add-only semantics) ---
+// --- State plan modifier (derived from enabled) ---
 
-type labelsAddOnlyModifier struct{}
+type stateFromEnabledModifier struct{}
 
-func (m labelsAddOnlyModifier) Description(_ context.Context) string {
-	return "Computes labels as the union of config, state, and managed-by:terraform (add-only)."
+func (m stateFromEnabledModifier) Description(_ context.Context) string {
+	return "Computes state from the enabled attribute."
 }
 
-func (m labelsAddOnlyModifier) MarkdownDescription(ctx context.Context) string {
+func (m stateFromEnabledModifier) MarkdownDescription(ctx context.Context) string {
 	return m.Description(ctx)
 }
 
-func (m labelsAddOnlyModifier) PlanModifyList(ctx context.Context, req planmodifier.ListRequest, resp *planmodifier.ListResponse) {
-	// If config is null/unknown, preserve state (no diff).
-	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+func (m stateFromEnabledModifier) PlanModifyString(ctx context.Context, req planmodifier.StringRequest, resp *planmodifier.StringResponse) {
+	// Read the planned enabled value.
+	var enabled types.Bool
+	resp.Diagnostics.Append(req.Plan.GetAttribute(ctx, path.Root("enabled"), &enabled)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	if enabled.IsUnknown() || enabled.IsNull() {
+		// Fall back to prior state if available.
 		if !req.StateValue.IsNull() {
 			resp.PlanValue = req.StateValue
 		}
 		return
 	}
 
-	// Build union of config labels + state labels + managed-by:terraform.
-	seen := map[string]bool{}
-	var union []string
-
-	addLabel := func(l string) {
-		if !seen[l] {
-			seen[l] = true
-			union = append(union, l)
-		}
+	if enabled.ValueBool() {
+		resp.PlanValue = types.StringValue("ENABLED")
+	} else {
+		resp.PlanValue = types.StringValue("DISABLED")
 	}
-
-	// Config labels first (preserves user-specified order).
-	var configLabels []string
-	req.ConfigValue.ElementsAs(ctx, &configLabels, false)
-	for _, l := range configLabels {
-		addLabel(l)
-	}
-
-	// State labels (from previous apply or Jira UI additions).
-	if !req.StateValue.IsNull() && !req.StateValue.IsUnknown() {
-		var stateLabels []string
-		req.StateValue.ElementsAs(ctx, &stateLabels, false)
-		for _, l := range stateLabels {
-			addLabel(l)
-		}
-	}
-
-	// Always include managed-by:terraform.
-	addLabel("managed-by:terraform")
-
-	planned, diags := types.ListValueFrom(ctx, types.StringType, union)
-	resp.Diagnostics.Append(diags...)
-	resp.PlanValue = planned
 }
+

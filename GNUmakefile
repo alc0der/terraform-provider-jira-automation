@@ -20,6 +20,15 @@ test:
 testacc:
 	TF_ACC=1 go test ./... -v $(TESTARGS) -timeout 120m
 
+generate:
+	go generate ./...
+
+docs:
+	go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate
+
+golden:
+	TF_ACC=1 GOLDEN_UPDATE=1 go test ./internal/provider/ -v -run TestAccDocExample -timeout 30m
+
 lint-env:
 	dotenv-linter check --ignore-checks UnorderedKey .env.example
 	@if [ -f .env ]; then dotenv-linter check --schema .env.schema --ignore-checks UnorderedKey .env && dotenv-linter diff .env.example .env; fi
@@ -27,4 +36,4 @@ lint-env:
 dev.tfrc: build
 	@printf 'provider_installation {\n  dev_overrides {\n    "registry.terraform.io/beno/jira-automation" = "%s"\n  }\n  direct {}\n}\n' "$(CURDIR)" > dev.tfrc
 
-.PHONY: build install test testacc lint-env
+.PHONY: build install test testacc generate docs golden lint-env

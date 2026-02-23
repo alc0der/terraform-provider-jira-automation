@@ -1,11 +1,11 @@
 ---
-page_title: "jira-automation_rule Resource - jira-automation"
+page_title: "{{.Name}} Resource - {{.ProviderShortName}}"
 subcategory: ""
 description: |-
   Manages a single Jira Automation rule.
 ---
 
-# jira-automation_rule (Resource)
+# {{.Name}} ({{.Type}})
 
 Manages a single Jira Automation rule.
 
@@ -15,130 +15,25 @@ Manages a single Jira Automation rule.
 
 The provider ships typed `trigger` and `components` blocks so you can avoid raw JSON for common patterns.
 
-```terraform
-resource "jira-automation_rule" "log_on_transition" {
-  name       = "Log on transition"
-  project_id = "10001"
-
-  trigger = {
-    type = "status_transition"
-    args = {
-      from_status = "To Do"
-      to_status   = "In Progress"
-    }
-  }
-
-  components = [{
-    type = "log"
-    args = {
-      message = "Issue {{issue.key}} moved to In Progress"
-    }
-  }]
-}
-```
+{{tffile "examples/resources/jira-automation_rule/simple_hcl.tf"}}
 
 ### Debugging with `add_release_related_work`
 
 Set `debug = "true"` on a component to inject diagnostic log actions that print the webhook URL, request body, and resolved field values. Remove the flag and re-apply to clean up the debug logs.
 
-```terraform
-resource "jira-automation_rule" "release_work" {
-  name       = "Add release related work"
-  project_id = "10001"
-
-  trigger = {
-    type = "status_transition"
-    args = {
-      from_status = "In Progress"
-      to_status   = "Done"
-    }
-  }
-
-  components = [{
-    type = "add_release_related_work"
-    args = {
-      version_field = "release_version" # resolved via field_aliases
-      category      = "deployment"
-      title         = "Deploy {{issue.key}}"
-      url           = "https://ci.example.com/deploy/{{issue.key}}"
-      debug         = "true"
-    }
-  }]
-}
-```
+{{tffile "examples/resources/jira-automation_rule/debug_webhook.tf"}}
 
 ### Custom component (condition with then/else)
 
 Conditions nest `then` and `else` action blocks. Each sub-block uses the same `type`/`args` structure.
 
-```terraform
-resource "jira-automation_rule" "conditional_comment" {
-  name       = "Comment on high-priority issues"
-  project_id = "10001"
-
-  trigger = {
-    type = "status_transition"
-    args = {
-      from_status = "To Do"
-      to_status   = "In Progress"
-    }
-  }
-
-  components = [{
-    type = "condition"
-    args = {
-      first    = "{{issue.priority.name}}"
-      operator = "equals"
-      second   = "High"
-    }
-
-    then = [{
-      type = "comment"
-      args = {
-        message = "High-priority issue started — notifying the team."
-      }
-    }]
-
-    else = [{
-      type = "log"
-      args = {
-        message = "Normal priority — no action needed."
-      }
-    }]
-  }]
-}
-```
+{{tffile "examples/resources/jira-automation_rule/condition_then_else.tf"}}
 
 ### Raw JSON (fall-back)
 
 When the HCL helpers don't cover your trigger or action type, use `trigger_json` and `components_json` directly. The provider performs semantic JSON comparison so key order and whitespace are ignored during plan.
 
-```terraform
-resource "jira-automation_rule" "json_fallback" {
-  name       = "My Rule"
-  project_id = "10001"
-  enabled    = true
-
-  trigger_json = jsonencode({
-    component     = "TRIGGER"
-    schemaVersion = 1
-    type          = "jira.issue.event.trigger:transitioned"
-    value = {
-      fromStatus = [{ type = "NAME", value = "To Do" }]
-      toStatus   = [{ type = "NAME", value = "In Progress" }]
-    }
-  })
-
-  components_json = jsonencode([
-    {
-      component     = "ACTION"
-      schemaVersion = 1
-      type          = "codebarrel.action.log"
-      value         = "Hello from Terraform"
-    }
-  ])
-}
-```
+{{tffile "examples/resources/jira-automation_rule/raw_json.tf"}}
 
 ## Schema
 

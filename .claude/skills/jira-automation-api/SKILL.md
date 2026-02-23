@@ -34,6 +34,41 @@ The GET response also uses this envelope (`{"rule": {...}}`), so a round-trip is
 
 The error message for a missing envelope is the same generic `400: "The request body could not be parsed"` — it gives no hint about the envelope.
 
+## POST /rule — Required Fields for Rule Creation
+
+**POST /rule requires ALL of these fields.** Omitting any one returns `400: "The request body could not be parsed"`.
+
+```json
+{
+  "rule": {
+    "name": "My Rule",
+    "state": "DISABLED",
+    "notifyOnError": "FIRSTERROR",
+    "canOtherRuleTrigger": false,
+    "authorAccountId": "<accountId from /rest/api/3/myself>",
+    "actor": {"type": "ACCOUNT_ID", "actor": "<same accountId>"},
+    "writeAccessType": "OWNER_ONLY",
+    "trigger": { ... },
+    "components": [ ... ],
+    "ruleScopeARIs": ["ari:cloud:jira:<cloudId>:project/<projectId>"]
+  }
+}
+```
+
+| Field | Values | Notes |
+|-------|--------|-------|
+| `state` | `"ENABLED"` / `"DISABLED"` | Always create disabled, enable via PUT /rule/{uuid}/state after |
+| `notifyOnError` | `"FIRSTERROR"` / `"EVERYERROR"` | How to notify on rule execution errors |
+| `canOtherRuleTrigger` | `true` / `false` | Whether other rules can trigger this one |
+| `authorAccountId` | string | Jira account ID of the author. Resolve via `GET /rest/api/3/myself` → `accountId` |
+| `actor` | `{"type":"ACCOUNT_ID","actor":"<id>"}` | Who the rule runs as (same accountId works) |
+| `writeAccessType` | `"OWNER_ONLY"` / `"COLLABORATORS"` | Edit permissions |
+| `ruleScopeARIs` | array of ARI strings | Project: `ari:cloud:jira:<cloudId>:project/<projectId>`, Global: `ari:cloud:jira::site/<cloudId>` |
+
+**Optional on create:** `description`, `labels`, `collaborators`.
+
+The response returns `{"ruleUuid": "..."}` (note: `ruleUuid`, not `uuid`).
+
 ## PUT Requires the Full Rule Object
 
 A PUT that only sends the fields you want to change will fail with 400. The API expects **all** fields from the GET response (minus `uuid`, `created`, `updated`).
@@ -107,6 +142,30 @@ The `ATLASSIAN_TOKEN` has a short lifetime. An expired token returns `401: "Unau
 - **Official OAS:** `atlassian-automation-oas.json` (in this skill directory). Downloaded from `https://developer.atlassian.com/cloud/automation/swagger.v3.json`. Defines endpoints, request/response envelopes, and base schemas (`RuleWriteRequest`, `ComponentConfigDTO`, `TriggerConfigDTO`, etc.). The official spec leaves `ComponentConfigDTO.type` as a free-form string and `value` as `oneOf [string, object]`.
 
 - **OAS Overlay:** `component-types.overlay.json` (in this skill directory). An [OAS Overlay 1.0](https://spec.openapis.org/overlay/v1.0.0.html) that enriches the official spec with discovered component types. Adds `x-known-values` to `ComponentConfigDTO.type` and `TriggerConfigDTO.type` with all known type strings, and adds named value schemas (e.g., `ConditionValue_comparator`, `ActionValue_webhook`) under `components.schemas`. Each has `x-type`, `x-ui-name`, and `x-schema-version` annotations. Apply with any OAS overlay tool to produce a merged spec.
+
+## Internal vs Public API Differences
+
+The UI uses the **internal API** for rule creation, while the public API also works with the correct fields. Key differences:
+
+| Aspect | Internal API (CREATE) | Public API (CREATE/UPDATE) |
+|--------|----------------------|---------------------------|
+| Envelope key | `ruleConfigBean` | `rule` |
+| Actor field | `actor.value` | `actor.actor` |
+| Scope field | `ruleScope.resources` | `ruleScopeARIs` |
+| Labels format | Numeric IDs (Long) | String names |
+| Endpoint | `{siteURL}/gateway/api/automation/internal-api/jira/{cloudId}/pro/rest/{projectId}/rule` | `api.atlassian.com/automation/public/jira/{cloudId}/rest/v1/rule` |
+
+The Terraform provider uses the **public API** for all operations.
+
+## Label Internal API
+
+Labels are managed via the internal API (not the public automation API).
+
+**List labels:** `GET {siteURL}/gateway/api/automation/internal-api/jira/{cloudId}/pro/rest/{projectId}/rule-labels`
+
+**Create label:** `POST` to the same URL with `{"name": "label-name", "color": "B300"}`. **The `color` field is required** — omitting it returns 500 with an empty body. Valid colors: `B300`, `B500`, `G300`, `T300`, `N800`, etc.
+
+**Add label to rule:** `PUT {siteURL}/gateway/api/automation/internal-api/jira/{cloudId}/pro/rest/{projectId}/rules/{ruleUUID}/labels/{labelId}` (idempotent).
 
 ## Debugging Checklist
 

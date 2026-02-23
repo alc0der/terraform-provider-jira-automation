@@ -30,7 +30,7 @@ resource "jira-automation_rule" "dep" {
   name       = "tf-acc-datasource-dep"
   project_id = %[1]q
 
-  trigger {
+  trigger = {
     type = "status_transition"
     args = {
       from_status = "To Do"
@@ -38,12 +38,12 @@ resource "jira-automation_rule" "dep" {
     }
   }
 
-  components {
+  components = [{
     type = "log"
     args = {
       message = "tf-acc-test: datasource dependency"
     }
-  }
+  }]
 }
 
 data "jira-automation_rules" "all" {

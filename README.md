@@ -14,7 +14,7 @@ A Terraform provider for managing Jira Automation rules via the Automation Rule 
 : `trigger_json` and `components_json` accept any valid JSON for uncovered types — you're never blocked.
 
 **Easy debugging**
-: `terraform plan` diffs rule components against live API state with semantic JSON comparison — only meaningful diffs, no whitespace noise.
+: Add `debug = "true"` to any component's `args` to inject diagnostic log actions that dump runtime values. Remove the arg and `terraform apply` cleans them up — no manual editing of rules in Jira.
 
 **Built-in agent skills**
 : Ships with agent skill files (`.claude/skills/`) that capture tacit API knowledge — envelope requirements, read-modify-write patterns, component ID handling — so coding agents work without reverse-engineering.
@@ -23,6 +23,10 @@ A Terraform provider for managing Jira Automation rules via the Automation Rule 
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) 1.5+ (required for `import` blocks and config generation)
 - A Jira Cloud site with an [API token](https://id.atlassian.com/manage-profile/security/api-tokens)
+
+> **Label setup:** Create a label named `managed-by:terraform` in the Jira Automation UI
+> (Project Settings → Automation → Labels) before using this provider. The provider will
+> tag all managed rules with this label so you can filter Terraform-managed rules.
 
 ## Setup
 
@@ -123,8 +127,6 @@ resource "jira-automation_rule" "example" {
   name    = "My Rule"
   enabled = true
 
-  labels = ["CI"]
-
   trigger_json = jsonencode({
     component     = "TRIGGER"
     schemaVersion = 1
@@ -155,7 +157,7 @@ resource "jira-automation_rule" "example" {
 | `enabled` | bool | optional | Enable/disable (default: `true`) |
 | `state` | string | computed | `ENABLED` or `DISABLED` |
 | `scope` | list(string) | computed | Scope ARIs assigned by the API |
-| `labels` | list(string) | optional | Labels (add-only — the provider auto-adds `managed-by:terraform`) |
+| `labels` | list(string) | computed | Rule labels (read-only). Auto-tagged with `managed-by:terraform`. |
 | `trigger_json` | string (JSON) | required | Trigger config — use `jsonencode()` |
 | `components_json` | string (JSON) | required | Actions/conditions array — use `jsonencode()` |
 
