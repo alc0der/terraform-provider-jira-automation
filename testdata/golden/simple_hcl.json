@@ -12,7 +12,7 @@
       "conditionParentId": null,
       "conditions": [],
       "connectionId": null,
-      "id": "b21ade06-f372-4b70-987b-aa7b21b5ff7c",
+      "id": "52ff57b2-ab99-42d3-bf00-359b49247848",
       "parentId": null,
       "schemaVersion": 1,
       "type": "codebarrel.action.log",
@@ -33,7 +33,7 @@
     "component": "TRIGGER",
     "conditions": [],
     "connectionId": null,
-    "id": "bfc630d5-b183-48a4-887e-071a73434411",
+    "id": "6a8763bf-a9e6-4ec3-a761-2d4d1e80dacd",
     "schemaVersion": 1,
     "type": "jira.issue.event.trigger:transitioned",
     "value": {
@@ -56,6 +56,6 @@
       ]
     }
   },
-  "uuid": "019c88d8-b585-7149-9508-8554a4be09ae",
+  "uuid": "019c88ef-0c7e-7b85-a6db-ba4e49eecb1e",
   "writeAccessType": "OWNER_ONLY"
 }

@@ -12,7 +12,7 @@
       "conditionParentId": null,
       "conditions": [],
       "connectionId": null,
-      "id": "c8404e9d-b4db-4c9b-9da9-9515246d6333",
+      "id": "7f730fd2-ade0-436c-bc6f-0f6fef393d59",
       "parentId": null,
       "schemaVersion": 1,
       "type": "codebarrel.action.log",
@@ -24,7 +24,7 @@
       "conditionParentId": null,
       "conditions": [],
       "connectionId": null,
-      "id": "ce94a27d-78e3-4f9b-b364-275f01656481",
+      "id": "19f6cae1-763f-4396-9139-04c701e8f6ae",
       "parentId": null,
       "schemaVersion": 1,
       "type": "codebarrel.action.log",
@@ -36,7 +36,7 @@
       "conditionParentId": null,
       "conditions": [],
       "connectionId": null,
-      "id": "6c919eb5-69f2-4dd4-90ee-f1c0531f5553",
+      "id": "4c27a909-636b-4aa0-8d60-4e3c3ef99b6d",
       "parentId": null,
       "schemaVersion": 1,
       "type": "codebarrel.action.log",
@@ -48,7 +48,7 @@
       "conditionParentId": null,
       "conditions": [],
       "connectionId": null,
-      "id": "8dc3f9d1-11e1-4980-97a9-9359e257bddd",
+      "id": "317ac0e5-a654-47a3-ad13-aa8d1fde26eb",
       "parentId": null,
       "schemaVersion": 1,
       "type": "codebarrel.action.log",
@@ -60,7 +60,7 @@
       "conditionParentId": null,
       "conditions": [],
       "connectionId": null,
-      "id": "39af50da-9512-4d79-9c48-3edd9f1f6509",
+      "id": "ca629245-fee1-4698-9d1f-d396c9688c94",
       "parentId": null,
       "schemaVersion": 1,
       "type": "jira.issue.outgoing.webhook",
@@ -97,7 +97,7 @@
     "component": "TRIGGER",
     "conditions": [],
     "connectionId": null,
-    "id": "191fcc66-0a72-4eab-b023-7eb273d0813c",
+    "id": "fb351db5-4206-40a1-9e67-6968abace6a8",
     "schemaVersion": 1,
     "type": "jira.issue.event.trigger:transitioned",
     "value": {
@@ -120,6 +120,6 @@
       ]
     }
   },
-  "uuid": "019c88d8-fe5e-709f-925c-e5fe15f06c39",
+  "uuid": "019c88ef-60ff-7167-8fc8-a9588eea7470",
   "writeAccessType": "OWNER_ONLY"
 }
