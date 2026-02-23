@@ -2,6 +2,56 @@
 
 A Terraform provider for managing Jira Automation rules via the Automation Rule Management REST API.
 
+<table style="table-layout:fixed;width:100%">
+<tr><th width="50%">HCL Config</th><th width="50%">Jira UI</th></tr>
+<tr valign="top">
+<td>
+
+```hcl
+resource "jira-automation_rule" "cond" {
+  name       = "Comment on high-priority issues"
+  project_id = "10001"
+
+  trigger = {
+    type = "status_transition"
+    args = {
+      from_status = "To Do"
+      to_status   = "In Progress"
+    }
+  }
+
+  components = [{
+    type = "condition"
+    args = {
+      first    = "{{issue.priority.name}}"
+      operator = "equals"
+      second   = "High"
+    }
+    then = [{
+      type = "comment"
+      args = {
+        message = "High-priority issue started"
+      }
+    }]
+    else = [{
+      type = "log"
+      args = {
+        message = "Normal priority — no action"
+      }
+    }]
+  }]
+}
+```
+
+</td>
+<td>
+<img src="testdata/screenshots/condition_then_else.png" width="100%" alt="Jira Automation rule builder showing the condition/then/else workflow" />
+</td>
+</tr>
+</table>
+
+> One HCL block → the provider generates the [nested API JSON](testdata/golden/condition_then_else.json) → Jira renders the visual workflow.
+
 ## Core Capabilities
 
 **B.Y.O.A. (Bring Your Own Agent)**
